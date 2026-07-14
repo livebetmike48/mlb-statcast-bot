@@ -104,6 +104,20 @@ class StatcastBot(discord.Client):
         )
         self.tree.add_command(livevelo_cmd)
 
+        pitchmix_cmd = app_commands.Command(
+            name="pitchmix",
+            description="A pitcher's pitch usage %, velocity, and whiff rate per pitch type",
+            callback=self._pitchmix_callback,
+        )
+        self.tree.add_command(pitchmix_cmd)
+
+        vspitch_cmd = app_commands.Command(
+            name="vspitch",
+            description="How a batter performs against one specific pitch type (e.g. sliders)",
+            callback=self._vspitch_callback,
+        )
+        self.tree.add_command(vspitch_cmd)
+
         setchannel_cmd = app_commands.Command(
             name="setchannel",
             description="Set this channel (reserved for future automatic posts)",
@@ -439,6 +453,52 @@ class StatcastBot(discord.Client):
             bar_empty = "⬜" * (10 - pct // 10)
             embed.add_field(name=stat_key, value=f"{bar_filled}{bar_empty} {ordinal(pct)} percentile", inline=False)
         embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified {player_type}s • Savant's own percentile scores")
+        await interaction.followup.send(embed=embed)
+
+    async def _pitchmix_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
+        await interaction.response.defer()
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        mix = statcast_api.pitch_mix_breakdown(rows)
+        if not mix:
+            await interaction.followup.send(f"{player['name']}: no pitch data found in that range.")
+            return
+
+        embed = discord.Embed(title=f"{player['name']} — Pitch Mix", color=discord.Color.blue())
+        for pt, data in mix.items():
+            velo = f"{data['avg_velo']} mph" if "avg_velo" in data else "-"
+            whiff = f"{data['whiff_pct']}% whiff" if "whiff_pct" in data else "no swings"
+            embed.add_field(
+                name=f"{pt} — {data['usage_pct']}% ({data['count']} thrown)",
+                value=f"{velo} • {whiff}",
+                inline=False,
+            )
+        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _vspitch_callback(self, interaction: discord.Interaction, player_name: str, pitch_type: str, start_date: str, end_date: str):
+        await interaction.response.defer()
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        pt = pitch_type.upper()
+        vs_result = statcast_api.vs_pitch_type_stats(rows, pt)
+        if vs_result is None:
+            await interaction.followup.send(f"{player['name']}: no pitches of type '{pt}' found in that range. Try FF, SI, SL, CH, CU, FC, ST, FS.")
+            return
+
+        embed = discord.Embed(title=f"{player['name']} vs {pt}", color=discord.Color.green())
+        embed.add_field(name="Pitches seen", value=str(vs_result["pitches_seen"]), inline=True)
+        if "avg" in vs_result:
+            embed.add_field(name="AVG", value=str(vs_result["avg"]), inline=True)
+        if "whiff_pct" in vs_result:
+            embed.add_field(name="Whiff %", value=f"{vs_result['whiff_pct']}%", inline=True)
+        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
     async def _setchannel_callback(self, interaction: discord.Interaction):
