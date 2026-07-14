@@ -102,55 +102,6 @@ def fetch_percentile_leaderboard(player_type: str, year: int) -> str:
     return resp.text
 
 
-def real_stat_values(rows: list[dict]) -> dict:
-    """
-    Computes actual real stat values (not percentiles) from pitch-level
-    Statcast data -- the same proven fetch mechanism already used for
-    /barrels and /luck. Plate appearances are counted as rows with a
-    non-empty 'events' field (only the final pitch of a PA has one).
-    """
-    pa_rows = [r for r in rows if r.get("events")]
-    total_pa = len(pa_rows)
-    if total_pa == 0:
-        return {}
-
-    strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
-    walks = sum(1 for r in pa_rows if r.get("events") == "walk")
-
-    # "Batted balls" for quality-of-contact purposes means balls actually
-    # PUT IN PLAY -- description == "hit_into_play" is the standard
-    # Statcast field for this. Fouls also carry exit velocity data (they're
-    # tracked too) but aren't part of real batted-ball quality stats, and
-    # including them was dragging exit velo/hard-hit% down significantly
-    # below the real numbers (confirmed: showed 86.5 mph instead of ~93).
-    batted_balls = [r for r in rows if r.get("description") == "hit_into_play"]
-    exit_velos = [v for v in (_safe_float(r.get("launch_speed")) for r in batted_balls) if v is not None]
-    hard_hit = sum(1 for ev in exit_velos if ev >= 95.0)
-
-    # xBA: strikeouts MUST be included in the denominator as automatic
-    # zeros (an automatic out contributes 0 to the expected-hit total but
-    # still counts as an at-bat) -- averaging only over batted balls and
-    # silently excluding strikeouts artificially inflates the result,
-    # confirmed against a real discrepancy: Juan Soto showed .364 instead
-    # of the real .307, since every "sure out" was being dropped from the
-    # denominator entirely rather than counted as a 0.
-    xba_numerator = sum(
-        _safe_float(r.get("estimated_ba_using_speedangle"), 0.0) for r in batted_balls
-    )
-    at_bats = len(batted_balls) + strikeouts  # matches real AB definition: excludes walks
-
-    result = {
-        "k_pct": round(strikeouts / total_pa * 100, 1),
-        "bb_pct": round(walks / total_pa * 100, 1),
-        "pa": total_pa,
-    }
-    if exit_velos:
-        result["exit_velo"] = round(sum(exit_velos) / len(exit_velos), 1)
-        result["hard_hit_pct"] = round(hard_hit / len(exit_velos) * 100, 1)
-    if at_bats > 0:
-        result["xba"] = round(xba_numerator / at_bats, 3)
-    return result
-
 
 def resolve_player(name: str) -> dict | None:
     """Returns {'id':, 'name':, 'is_pitcher': bool} or None if not found."""
