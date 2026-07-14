@@ -20,7 +20,7 @@ log = logging.getLogger("statcast_bot")
 
 intents = discord.Intents.default()
 
-_leaderboard_cache = {"rows": None, "fetched_at": None}
+_leaderboard_cache = {}
 
 
 def et_date_str(offset_days: int = 0) -> str:
@@ -110,7 +110,7 @@ class StatcastBot(discord.Client):
 
         leaders_cmd = app_commands.Command(
             name="leaders",
-            description="Top 10 batters in a given Statcast stat this season",
+            description="Top 10 in a Statcast stat (player_type: batter or pitcher, defaults to batter)",
             callback=self._leaders_callback,
         )
         self.tree.add_command(leaders_cmd)
@@ -118,7 +118,7 @@ class StatcastBot(discord.Client):
 
         percentile_cmd = app_commands.Command(
             name="percentile",
-            description="A batter's percentile rank across every Statcast stat this season",
+            description="A player's percentile ranks (player_type: batter or pitcher, defaults to batter)",
             callback=self._percentile_callback,
         )
         self.tree.add_command(percentile_cmd)
@@ -300,78 +300,89 @@ class StatcastBot(discord.Client):
 
     async def _stat_autocomplete(self, interaction: discord.Interaction, current: str):
         current_lower = current.lower()
-        matches = [s for s in leaderboard.STAT_COLUMNS if current_lower in s.lower()][:25]
+        # Show both batter and pitcher stat keys, since we don't know which
+        # type they'll pick until the command actually runs
+        all_keys = list(leaderboard.BATTER_STAT_COLUMNS) + list(leaderboard.PITCHER_STAT_COLUMNS)
+        matches = [s for s in dict.fromkeys(all_keys) if current_lower in s.lower()][:25]
         return [app_commands.Choice(name=s, value=s) for s in matches]
 
-    async def _get_cached_leaderboard(self):
+    async def _get_cached_leaderboard(self, player_type: str):
         global _leaderboard_cache
         now = datetime.now(timezone.utc)
-        if _leaderboard_cache["rows"] is not None and (now - _leaderboard_cache["fetched_at"]).total_seconds() < 3600:
-            return _leaderboard_cache["rows"]
-        rows = await asyncio.to_thread(leaderboard.fetch_leaderboard, "batter", 2026)
-        _leaderboard_cache = {"rows": rows, "fetched_at": now}
+        cache_key = player_type
+        cached = _leaderboard_cache.get(cache_key)
+        if cached and (now - cached["fetched_at"]).total_seconds() < 3600:
+            return cached["rows"]
+        rows = await asyncio.to_thread(leaderboard.fetch_leaderboard, player_type, 2026)
+        _leaderboard_cache[cache_key] = {"rows": rows, "fetched_at": now}
         return rows
 
-    async def _leaders_callback(self, interaction: discord.Interaction, stat: str):
+    async def _leaders_callback(self, interaction: discord.Interaction, stat: str, player_type: str = "batter"):
         await interaction.response.defer()
-        if stat not in leaderboard.STAT_COLUMNS:
-            await interaction.followup.send(f"Unknown stat '{stat}'. Try: {', '.join(leaderboard.STAT_COLUMNS)}")
+        stat_columns = leaderboard.PITCHER_STAT_COLUMNS if player_type == "pitcher" else leaderboard.BATTER_STAT_COLUMNS
+        if stat not in stat_columns:
+            await interaction.followup.send(f"'{stat}' isn't a {player_type} stat. Try: {', '.join(stat_columns)}")
             return
 
         try:
-            rows = await self._get_cached_leaderboard()
+            rows = await self._get_cached_leaderboard(player_type)
         except Exception as e:
             await interaction.followup.send(f"Couldn't fetch leaderboard: {e}")
             return
 
-        leaders = leaderboard.get_leaders(rows, stat, limit=10)
+        leaders = leaderboard.get_leaders(rows, stat, limit=10, stat_columns=stat_columns)
         if not leaders:
-            await interaction.followup.send(f"No qualified players found for '{stat}'.")
+            await interaction.followup.send(f"No qualified {player_type}s found for '{stat}'.")
             return
 
-        lines = [f"{i+1}. {p['name']} — {p['value']}" for i, p in enumerate(leaders)]
-        embed = discord.Embed(title=f"MLB Leaders — {stat}", description="\n".join(lines), color=discord.Color.purple())
-        embed.set_footer(text="2026 season, qualified batters • Data: Baseball Savant")
+        lines = [f"{i+1}. {p['name']} — {p['percentile']}th percentile" for i, p in enumerate(leaders)]
+        embed = discord.Embed(title=f"MLB {player_type.title()} Leaders — {stat}", description="\n".join(lines), color=discord.Color.purple())
+        embed.set_footer(text=f"2026 season, qualified {player_type}s • Savant's own percentile scores • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
-    async def _percentile_callback(self, interaction: discord.Interaction, player_name: str):
+    async def _percentile_callback(self, interaction: discord.Interaction, player_name: str, player_type: str = "batter"):
         await interaction.response.defer()
+        stat_columns = leaderboard.PITCHER_STAT_COLUMNS if player_type == "pitcher" else leaderboard.BATTER_STAT_COLUMNS
+
         try:
-            rows = await self._get_cached_leaderboard()
+            rows = await self._get_cached_leaderboard(player_type)
         except Exception as e:
             await interaction.followup.send(f"Couldn't fetch leaderboard: {e}")
             return
 
         results = {}
-        for stat_key in leaderboard.STAT_COLUMNS:
-            result = leaderboard.get_percentile(rows, stat_key, player_name)
+        for stat_key in stat_columns:
+            result = leaderboard.get_percentile(rows, stat_key, player_name, stat_columns=stat_columns)
             if result:
                 results[stat_key] = result
 
         if not results:
-            await interaction.followup.send(f"No qualified data found for '{player_name}' -- check spelling, or they may not meet the PA threshold.")
+            await interaction.followup.send(
+                f"No qualified {player_type} data found for '{player_name}' -- check spelling, wrong player_type "
+                f"(try the other one), or they may not meet the qualification threshold."
+            )
             return
 
-        embed = discord.Embed(title=f"{player_name} — Percentile Rankings", color=discord.Color.teal())
+        embed = discord.Embed(title=f"{player_name} — Percentile Rankings ({player_type})", color=discord.Color.teal())
         for stat_key, result in results.items():
             pct = result["percentile"]
             bar_filled = "🟩" * (pct // 10)
             bar_empty = "⬜" * (10 - pct // 10)
-            embed.add_field(name=f"{stat_key}: {result['value']}", value=f"{bar_filled}{bar_empty} {pct}th percentile", inline=False)
-        embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified batters • Data: Baseball Savant")
+            embed.add_field(name=stat_key, value=f"{bar_filled}{bar_empty} {pct}th percentile", inline=False)
+        embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified {player_type}s • Savant's own percentile scores")
         await interaction.followup.send(embed=embed)
 
     async def _setchannel_callback(self, interaction: discord.Interaction):
         storage.set_config("announce_channel_id", str(interaction.channel_id))
         await interaction.response.send_message("✅ Channel saved (reserved for future automatic posts).")
 
-    async def _checkleaderboard_callback(self, interaction: discord.Interaction):
+    async def _checkleaderboard_callback(self, interaction: discord.Interaction, player_type: str = "batter"):
         await interaction.response.defer()
         import csv
         import io
 
         try:
-            text = await asyncio.to_thread(statcast_api.fetch_percentile_leaderboard, "batter", 2026)
+            text = await asyncio.to_thread(statcast_api.fetch_percentile_leaderboard, player_type, 2026)
         except Exception as e:
             await interaction.followup.send(f"Request failed: {type(e).__name__}: {e}"[:2000])
             return
@@ -395,8 +406,9 @@ class StatcastBot(discord.Client):
             f"**Percentile leaderboard test — SUCCESS**\n\n"
             f"Rows: {len(rows)}\n"
             f"Columns: {len(columns)}\n\n"
-            f"First 15 columns: {columns[:15]}\n\n"
-            f"Sample first row (first 10 fields): {dict(list(rows[0].items())[:10])}"
+            f"ALL columns: {columns}\n\n"
+            f"Sample full row (Soto if found, else first row): "
+            f"{next((dict(r) for r in rows if 'Soto' in r.get('player_name', '')), dict(rows[0]))}"
         )
         await interaction.followup.send(msg[:2000])
 
