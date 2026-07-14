@@ -185,6 +185,25 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     return result
 
 
+def pitch_mix_by_handedness(rows: list[dict]) -> dict:
+    """
+    Same pitch mix breakdown, but split by batter handedness (vs LHH / vs
+    RHH), since a pitcher's approach often genuinely differs by who's up --
+    confirmed real use case: a pitcher throwing his fastball much more to
+    one side than the other. Uses the 'stand' field (batter's batting
+    side), confirmed present in the real CSV structure since the very
+    first test tonight.
+    """
+    vs_l_rows = [r for r in rows if r.get("stand") == "L"]
+    vs_r_rows = [r for r in rows if r.get("stand") == "R"]
+
+    return {
+        "vs_L": pitch_mix_breakdown(vs_l_rows),
+        "vs_R": pitch_mix_breakdown(vs_r_rows),
+        "overall": pitch_mix_breakdown(rows),
+    }
+
+
 def resolve_player(name: str) -> dict | None:
     """Returns {'id':, 'name':, 'is_pitcher': bool} or None if not found."""
     resp = requests.get(PEOPLE_SEARCH, params={"names": name}, timeout=15)
