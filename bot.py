@@ -372,12 +372,31 @@ class StatcastBot(discord.Client):
             )
             return
 
+        # Pull real stat values too, from actual pitch-level data (same
+        # proven mechanism as /barrels and /luck) -- covers K%, BB%, xBA,
+        # exit velo, hard-hit%. The percentile-rankings endpoint only ever
+        # gave us percentile scores, never the underlying real numbers.
+        real_values = {}
+        try:
+            player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
+            if player:
+                season_start = f"{et_date_str(0)[:4]}-01-01"
+                today = et_date_str(0)
+                pitch_rows = await asyncio.to_thread(
+                    statcast_api.fetch_statcast, player["id"], player_type == "pitcher", season_start, today
+                )
+                real_values = statcast_api.real_stat_values(pitch_rows)
+        except Exception as e:
+            log.error("Couldn't fetch real stat values for %s: %s", player_name, e)
+
         embed = discord.Embed(title=f"{player_name} — Percentile Rankings ({player_type})", color=discord.Color.teal())
         for stat_key, result in results.items():
             pct = result["percentile"]
             bar_filled = "🟩" * (pct // 10)
             bar_empty = "⬜" * (10 - pct // 10)
-            embed.add_field(name=stat_key, value=f"{bar_filled}{bar_empty} {ordinal(pct)} percentile", inline=False)
+            real_val = real_values.get(stat_key)
+            label = f"{stat_key}: {real_val}" if real_val is not None else stat_key
+            embed.add_field(name=label, value=f"{bar_filled}{bar_empty} {ordinal(pct)} percentile", inline=False)
         embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified {player_type}s • Savant's own percentile scores")
         await interaction.followup.send(embed=embed)
 
