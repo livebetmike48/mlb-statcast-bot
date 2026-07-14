@@ -153,8 +153,10 @@ def pitch_mix_breakdown(rows: list[dict]) -> dict:
 def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     """
     A batter's performance against ONE specific pitch type: whiff rate,
-    and batting average (using the same correct at-bat denominator as the
-    xBA fix -- strikeouts count as automatic outs, walks are excluded).
+    batting average (same correct at-bat denominator as the xBA fix --
+    strikeouts count as automatic outs, walks excluded), K%, and xwOBA
+    (same averaging convention already tested in analysis.expected_vs_actual,
+    scoped to just this pitch type's batted balls).
     """
     pitch_rows = [r for r in rows if r.get("pitch_type") == pitch_type]
     if not pitch_rows:
@@ -173,6 +175,9 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     )
     at_bats = hits + balls_in_play_outs + strikeouts
 
+    xwoba_values = [_safe_float(r.get("estimated_woba_using_speedangle")) for r in pitch_rows]
+    xwoba_values = [v for v in xwoba_values if v is not None]
+
     result = {
         "pitches_seen": len(pitch_rows),
         "swings": swings,
@@ -182,6 +187,10 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
         result["whiff_pct"] = round(whiffs / swings * 100, 1)
     if at_bats > 0:
         result["avg"] = round(hits / at_bats, 3)
+    if pa_rows:
+        result["k_pct"] = round(strikeouts / len(pa_rows) * 100, 1)
+    if xwoba_values:
+        result["xwoba"] = round(sum(xwoba_values) / len(xwoba_values), 3)
     return result
 
 
