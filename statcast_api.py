@@ -106,7 +106,11 @@ def fetch_percentile_leaderboard(player_type: str, year: int, team: str = "") ->
 
 
 SWING_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul", "foul_tip", "hit_into_play"}
-WHIFF_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked"}
+# foul_tip counts as a whiff in Savant's definition -- empirically confirmed:
+# with it, Soto vs RHP computes 17.3% vs the real 17.4% (residue is data
+# vintage); without it, 15.4%. His vs-LHP number matched exactly either way
+# because he had no foul tips against lefties.
+WHIFF_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul_tip"}
 
 
 def pitch_mix_breakdown(rows: list[dict]) -> dict:
