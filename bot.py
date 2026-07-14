@@ -139,6 +139,13 @@ class StatcastBot(discord.Client):
         )
         self.tree.add_command(vspitch_cmd)
 
+        vseachpitch_cmd = app_commands.Command(
+            name="vseachpitch",
+            description="Full table: a player's stats vs EVERY pitch type, filterable by opponent hand",
+            callback=self._vseachpitch_callback,
+        )
+        self.tree.add_command(vseachpitch_cmd)
+
         vshand_cmd = app_commands.Command(
             name="vshand",
             description="Batter's split vs LHP/RHP, or pitcher's split vs LHB/RHB",
@@ -532,7 +539,9 @@ class StatcastBot(discord.Client):
         embed.set_footer(text=f"{date_label} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
-    async def _vspitch_callback(self, interaction: discord.Interaction, player_name: str, pitch_type: str,
+    async def _vspitch_callback(self, interaction: discord.Interaction, player_name: str,
+                                 pitch_type: Literal["FF", "SI", "SL", "CH", "CU", "FC", "ST", "FS", "KC", "SV"],
+                                 hand: Literal["L", "R", "all"] = "all",
                                  start_date: str = None, end_date: str = None):
         await interaction.response.defer()
         if not start_date:
@@ -544,17 +553,24 @@ class StatcastBot(discord.Client):
             return
         player, rows = result
 
+        hand_field = "stand" if player["is_pitcher"] else "p_throws"
+        if hand in ("L", "R"):
+            rows = [r for r in rows if r.get(hand_field) == hand]
+
         pt = pitch_type.upper()
         vs_result = statcast_api.vs_pitch_type_stats(rows, pt)
         if vs_result is None:
-            await interaction.followup.send(f"{player['name']}: no pitches of type '{pt}' found in that range. Try FF, SI, SL, CH, CU, FC, ST, FS.")
+            await interaction.followup.send(f"{player['name']}: no pitches of type '{pt}' found in that range (hand={hand}).")
             return
 
-        embed = discord.Embed(title=f"{player['name']} vs {pt}", color=discord.Color.green())
+        hand_label = f" (vs {hand}HP)" if hand in ("L", "R") and not player["is_pitcher"] else (f" (vs {hand}HB)" if hand in ("L", "R") else "")
+        embed = discord.Embed(title=f"{player['name']} vs {pt}{hand_label}", color=discord.Color.green())
         embed.add_field(name="Pitches seen", value=str(vs_result["pitches_seen"]), inline=True)
         embed.add_field(name="PA ending on this pitch", value=str(vs_result["pa_ending_on_this_pitch"]), inline=True)
         if "avg" in vs_result:
             embed.add_field(name="AVG", value=str(vs_result["avg"]), inline=True)
+        if "xba" in vs_result:
+            embed.add_field(name="xBA", value=str(vs_result["xba"]), inline=True)
         if "xwoba" in vs_result:
             embed.add_field(name="xwOBA", value=str(vs_result["xwoba"]), inline=True)
         if "whiff_pct" in vs_result:
@@ -562,6 +578,53 @@ class StatcastBot(discord.Client):
         if "k_pct" in vs_result:
             embed.add_field(name="K %", value=f"{vs_result['k_pct']}%", inline=True)
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _vseachpitch_callback(self, interaction: discord.Interaction, player_name: str,
+                                     hand: Literal["L", "R", "all"] = "all",
+                                     start_date: str = None, end_date: str = None):
+        await interaction.response.defer()
+        if not start_date:
+            start_date = f"{et_date_str(0)[:4]}-01-01"
+        if not end_date:
+            end_date = et_date_str(0)
+
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        hand_field = "stand" if player["is_pitcher"] else "p_throws"
+        if hand in ("L", "R"):
+            rows = [r for r in rows if r.get(hand_field) == hand]
+
+        table = statcast_api.vs_each_pitch(rows)
+        if not table:
+            await interaction.followup.send(f"{player['name']}: no pitch data found in that range (hand={hand}).")
+            return
+
+        if player["is_pitcher"]:
+            hand_label = f" (vs {hand}HB)" if hand in ("L", "R") else " (vs all batters)"
+        else:
+            hand_label = f" (vs {hand}HP)" if hand in ("L", "R") else " (vs all pitchers)"
+
+        embed = discord.Embed(title=f"{player['name']} — vs Each Pitch{hand_label}", color=discord.Color.dark_green())
+        for pt, s in table.items():
+            parts = [f"PA: {s['pa_ending_on_this_pitch']}"]
+            if "xba" in s:
+                parts.append(f"xBA: {s['xba']}")
+            if "xwoba" in s:
+                parts.append(f"xwOBA: {s['xwoba']}")
+            if "whiff_pct" in s:
+                parts.append(f"Whiff: {s['whiff_pct']}%")
+            if "k_pct" in s:
+                parts.append(f"K: {s['k_pct']}%")
+            embed.add_field(
+                name=f"{pt} ({s['pitches_seen']} pitches)",
+                value=" • ".join(parts),
+                inline=False,
+            )
+        embed.set_footer(text=f"{start_date} to {end_date} • min 10 pitches per type • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
     async def _vshand_callback(self, interaction: discord.Interaction, player_name: str,
