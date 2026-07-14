@@ -213,6 +213,51 @@ def pitch_mix_by_handedness(rows: list[dict]) -> dict:
     }
 
 
+def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> dict | None:
+    """
+    Same proven calculation methods as vs_pitch_type_stats (correct AB
+    denominator, PA-based K%/BB%, averaged xwOBA) but grouped by
+    handedness instead of pitch type. hand_field is 'p_throws' (to split
+    a BATTER's stats by pitcher handedness faced) or 'stand' (to split a
+    PITCHER's stats by batter handedness faced).
+    """
+    filtered = [r for r in rows if r.get(hand_field) == hand_value]
+    if not filtered:
+        return None
+
+    swings = sum(1 for r in filtered if r.get("description") in SWING_DESCRIPTIONS)
+    whiffs = sum(1 for r in filtered if r.get("description") in WHIFF_DESCRIPTIONS)
+
+    pa_rows = [r for r in filtered if r.get("events")]
+    strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
+    walks = sum(1 for r in pa_rows if r.get("events") == "walk")
+    hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
+    balls_in_play_outs = sum(
+        1 for r in pa_rows
+        if r.get("events") not in {"strikeout", "walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
+    )
+    at_bats = hits + balls_in_play_outs + strikeouts
+
+    xba_batted = [r for r in filtered if r.get("description") == "hit_into_play"]
+    xba_numerator = sum(_safe_float(r.get("estimated_ba_using_speedangle"), 0.0) for r in xba_batted)
+
+    xwoba_values = [_safe_float(r.get("estimated_woba_using_speedangle")) for r in filtered]
+    xwoba_values = [v for v in xwoba_values if v is not None]
+
+    result = {"pa": len(pa_rows)}
+    if at_bats > 0:
+        result["avg"] = round(hits / at_bats, 3)
+        result["xba"] = round(xba_numerator / at_bats, 3)
+    if swings > 0:
+        result["whiff_pct"] = round(whiffs / swings * 100, 1)
+    if pa_rows:
+        result["k_pct"] = round(strikeouts / len(pa_rows) * 100, 1)
+        result["bb_pct"] = round(walks / len(pa_rows) * 100, 1)
+    if xwoba_values:
+        result["xwoba"] = round(sum(xwoba_values) / len(xwoba_values), 3)
+    return result
+
+
 def resolve_player(name: str) -> dict | None:
     """Returns {'id':, 'name':, 'is_pitcher': bool} or None if not found."""
     resp = requests.get(PEOPLE_SEARCH, params={"names": name}, timeout=15)
