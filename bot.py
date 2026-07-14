@@ -118,6 +118,13 @@ class StatcastBot(discord.Client):
         )
         self.tree.add_command(vspitch_cmd)
 
+        checkscope_cmd = app_commands.Command(
+            name="checkscope",
+            description="Debug: verify a fetch is correctly scoped to one player, not their whole team",
+            callback=self._checkscope_callback,
+        )
+        self.tree.add_command(checkscope_cmd)
+
         setchannel_cmd = app_commands.Command(
             name="setchannel",
             description="Set this channel (reserved for future automatic posts)",
@@ -455,32 +462,48 @@ class StatcastBot(discord.Client):
         embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified {player_type}s • Savant's own percentile scores")
         await interaction.followup.send(embed=embed)
 
-    async def _pitchmix_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
+    async def _pitchmix_callback(self, interaction: discord.Interaction, player_name: str,
+                                  start_date: str = None, end_date: str = None):
         await interaction.response.defer()
+        if not start_date:
+            start_date = f"{et_date_str(0)[:4]}-01-01"
+        if not end_date:
+            end_date = et_date_str(0)
+
         result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
         if result is None:
             return
         player, rows = result
 
-        mix = statcast_api.pitch_mix_breakdown(rows)
-        if not mix:
+        split = statcast_api.pitch_mix_by_handedness(rows)
+        if not split["overall"]:
             await interaction.followup.send(f"{player['name']}: no pitch data found in that range.")
             return
 
-        embed = discord.Embed(title=f"{player['name']} — Pitch Mix", color=discord.Color.blue())
-        for pt, data in mix.items():
-            velo = f"{data['avg_velo']} mph" if "avg_velo" in data else "-"
-            whiff = f"{data['whiff_pct']}% whiff" if "whiff_pct" in data else "no swings"
+        embed = discord.Embed(title=f"{player['name']} — Pitch Mix (vs LHH / vs RHH)", color=discord.Color.blue())
+        for pt in split["overall"]:
+            vs_l = split["vs_L"].get(pt)
+            vs_r = split["vs_R"].get(pt)
+            l_str = f"{vs_l['usage_pct']}%" if vs_l else "0%"
+            r_str = f"{vs_r['usage_pct']}%" if vs_r else "0%"
+            overall = split["overall"][pt]
+            velo = f"{overall['avg_velo']} mph" if "avg_velo" in overall else "-"
             embed.add_field(
-                name=f"{pt} — {data['usage_pct']}% ({data['count']} thrown)",
-                value=f"{velo} • {whiff}",
+                name=f"{pt} — {overall['usage_pct']}% overall ({velo})",
+                value=f"vs LHH: {l_str} • vs RHH: {r_str}",
                 inline=False,
             )
-        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
+        date_label = "season-to-date" if start_date.endswith("-01-01") else f"{start_date} to {end_date}"
+        embed.set_footer(text=f"{date_label} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
-    async def _vspitch_callback(self, interaction: discord.Interaction, player_name: str, pitch_type: str, start_date: str, end_date: str):
+    async def _vspitch_callback(self, interaction: discord.Interaction, player_name: str, pitch_type: str,
+                                 start_date: str = None, end_date: str = None):
         await interaction.response.defer()
+        if not start_date:
+            start_date = f"{et_date_str(0)[:4]}-01-01"
+        if not end_date:
+            end_date = et_date_str(0)
         result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
         if result is None:
             return
@@ -500,6 +523,40 @@ class StatcastBot(discord.Client):
             embed.add_field(name="Whiff %", value=f"{vs_result['whiff_pct']}%", inline=True)
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
+
+    async def _checkscope_callback(self, interaction: discord.Interaction, player_name: str, single_date: str):
+        await interaction.response.defer()
+        try:
+            player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
+        except Exception as e:
+            await interaction.followup.send(f"Lookup failed: {e}")
+            return
+        if player is None:
+            await interaction.followup.send(f"No player found for '{player_name}'.")
+            return
+
+        try:
+            rows = await asyncio.to_thread(
+                statcast_api.fetch_statcast, player["id"], player["is_pitcher"], single_date, single_date
+            )
+        except Exception as e:
+            await interaction.followup.send(f"Fetch failed: {e}")
+            return
+
+        unique_batters = set(r.get("batter") for r in rows)
+        unique_pitchers = set(r.get("pitcher") for r in rows)
+        sample_names = set(r.get("player_name") for r in rows)
+
+        msg = (
+            f"**Scope check: {player['name']} (ID {player['id']}) on {single_date}**\n\n"
+            f"Total rows returned: {len(rows)}\n"
+            f"Unique batter IDs in results: {len(unique_batters)}\n"
+            f"Unique pitcher IDs in results: {len(unique_pitchers)}\n"
+            f"Sample player_name values seen: {list(sample_names)[:5]}\n\n"
+            f"If this player played a normal game, ~15-25 rows and mostly ONE batter ID "
+            f"(if he's a batter) is correct scope. Many different batter IDs = scope bug."
+        )
+        await interaction.followup.send(msg[:2000])
 
     async def _setchannel_callback(self, interaction: discord.Interaction):
         storage.set_config("announce_channel_id", str(interaction.channel_id))
