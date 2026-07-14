@@ -167,11 +167,11 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
 
     pa_rows = [r for r in pitch_rows if r.get("events")]
     strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
-    walks = sum(1 for r in pa_rows if r.get("events") == "walk")
+    walks = sum(1 for r in pa_rows if r.get("events") in {"walk", "intent_walk"})
     hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
     balls_in_play_outs = sum(
         1 for r in pa_rows
-        if r.get("events") not in {"strikeout", "walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
+        if r.get("events") not in {"strikeout", "walk", "intent_walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
     )
     at_bats = hits + balls_in_play_outs + strikeouts
 
@@ -230,11 +230,11 @@ def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> d
 
     pa_rows = [r for r in filtered if r.get("events")]
     strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
-    walks = sum(1 for r in pa_rows if r.get("events") == "walk")
+    walks = sum(1 for r in pa_rows if r.get("events") in {"walk", "intent_walk"})
     hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
     balls_in_play_outs = sum(
         1 for r in pa_rows
-        if r.get("events") not in {"strikeout", "walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
+        if r.get("events") not in {"strikeout", "walk", "intent_walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
     )
     at_bats = hits + balls_in_play_outs + strikeouts
 
