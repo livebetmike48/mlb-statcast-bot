@@ -23,6 +23,15 @@ intents = discord.Intents.default()
 _leaderboard_cache = {}
 
 
+def ordinal(n: int) -> str:
+    """82 -> '82nd', 61 -> '61st', 94 -> '94th', 100 -> '100th'."""
+    if 11 <= (n % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def et_date_str(offset_days: int = 0) -> str:
     et = datetime.now(timezone.utc) - timedelta(hours=4)
     et += timedelta(days=offset_days)
@@ -335,7 +344,7 @@ class StatcastBot(discord.Client):
             await interaction.followup.send(f"No qualified {player_type}s found for '{stat}'.")
             return
 
-        lines = [f"{i+1}. {p['name']} — {p['percentile']}th percentile" for i, p in enumerate(leaders)]
+        lines = [f"{i+1}. {p['name']} — {ordinal(p['percentile'])} percentile" for i, p in enumerate(leaders)]
         embed = discord.Embed(title=f"MLB {player_type.title()} Leaders — {stat}", description="\n".join(lines), color=discord.Color.purple())
         embed.set_footer(text=f"2026 season, qualified {player_type}s • Savant's own percentile scores • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
@@ -368,7 +377,7 @@ class StatcastBot(discord.Client):
             pct = result["percentile"]
             bar_filled = "🟩" * (pct // 10)
             bar_empty = "⬜" * (10 - pct // 10)
-            embed.add_field(name=stat_key, value=f"{bar_filled}{bar_empty} {pct}th percentile", inline=False)
+            embed.add_field(name=stat_key, value=f"{bar_filled}{bar_empty} {ordinal(pct)} percentile", inline=False)
         embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified {player_type}s • Savant's own percentile scores")
         await interaction.followup.send(embed=embed)
 
