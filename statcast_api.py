@@ -117,8 +117,14 @@ def real_stat_values(rows: list[dict]) -> dict:
     strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
     walks = sum(1 for r in pa_rows if r.get("events") == "walk")
 
-    batted_balls = [r for r in rows if _safe_float(r.get("launch_speed")) is not None]
-    exit_velos = [_safe_float(r["launch_speed"]) for r in batted_balls]
+    # "Batted balls" for quality-of-contact purposes means balls actually
+    # PUT IN PLAY -- description == "hit_into_play" is the standard
+    # Statcast field for this. Fouls also carry exit velocity data (they're
+    # tracked too) but aren't part of real batted-ball quality stats, and
+    # including them was dragging exit velo/hard-hit% down significantly
+    # below the real numbers (confirmed: showed 86.5 mph instead of ~93).
+    batted_balls = [r for r in rows if r.get("description") == "hit_into_play"]
+    exit_velos = [v for v in (_safe_float(r.get("launch_speed")) for r in batted_balls) if v is not None]
     hard_hit = sum(1 for ev in exit_velos if ev >= 95.0)
 
     # xBA: strikeouts MUST be included in the denominator as automatic
