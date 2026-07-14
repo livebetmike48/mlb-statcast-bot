@@ -139,6 +139,13 @@ class StatcastBot(discord.Client):
         )
         self.tree.add_command(vspitch_cmd)
 
+        vshand_cmd = app_commands.Command(
+            name="vshand",
+            description="Batter's split vs LHP/RHP, or pitcher's split vs LHB/RHB",
+            callback=self._vshand_callback,
+        )
+        self.tree.add_command(vshand_cmd)
+
         checkscope_cmd = app_commands.Command(
             name="checkscope",
             description="Debug: verify a fetch is correctly scoped to one player, not their whole team",
@@ -547,6 +554,53 @@ class StatcastBot(discord.Client):
             embed.add_field(name="Whiff %", value=f"{vs_result['whiff_pct']}%", inline=True)
         if "k_pct" in vs_result:
             embed.add_field(name="K %", value=f"{vs_result['k_pct']}%", inline=True)
+        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _vshand_callback(self, interaction: discord.Interaction, player_name: str,
+                                start_date: str = None, end_date: str = None):
+        await interaction.response.defer()
+        if not start_date:
+            start_date = f"{et_date_str(0)[:4]}-01-01"
+        if not end_date:
+            end_date = et_date_str(0)
+
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        # A batter's stats split by the PITCHER's hand (p_throws); a
+        # pitcher's stats split by the BATTER's hand (stand) -- confirmed
+        # both fields present since the very first test tonight.
+        hand_field = "stand" if player["is_pitcher"] else "p_throws"
+        vs_l = statcast_api.vs_handedness_stats(rows, hand_field, "L")
+        vs_r = statcast_api.vs_handedness_stats(rows, hand_field, "R")
+
+        if not vs_l and not vs_r:
+            await interaction.followup.send(f"{player['name']}: no data found in that range.")
+            return
+
+        opp_label = "LHB / RHB" if player["is_pitcher"] else "LHP / RHP"
+        embed = discord.Embed(title=f"{player['name']} — Split vs {opp_label}", color=discord.Color.dark_teal())
+
+        def _fmt(label, key, pct=False):
+            l_val = vs_l.get(key) if vs_l else None
+            r_val = vs_r.get(key) if vs_r else None
+            l_str = f"{l_val}%" if pct and l_val is not None else (str(l_val) if l_val is not None else "-")
+            r_str = f"{r_val}%" if pct and r_val is not None else (str(r_val) if r_val is not None else "-")
+            return f"{label}: {l_str} vs L | {r_str} vs R"
+
+        lines = [
+            _fmt("PA", "pa"),
+            _fmt("AVG", "avg"),
+            _fmt("xBA", "xba"),
+            _fmt("xwOBA", "xwoba"),
+            _fmt("K%", "k_pct", pct=True),
+            _fmt("BB%", "bb_pct", pct=True),
+            _fmt("Whiff%", "whiff_pct", pct=True),
+        ]
+        embed.description = "\n".join(lines)
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
