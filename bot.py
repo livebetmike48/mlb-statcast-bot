@@ -131,6 +131,7 @@ class StatcastBot(discord.Client):
             callback=self._percentile_callback,
         )
         self.tree.add_command(percentile_cmd)
+        percentile_cmd.autocomplete("player_name")(self._player_name_autocomplete)
 
         try:
             guild_id = os.getenv("GUILD_ID")
@@ -306,6 +307,27 @@ class StatcastBot(discord.Client):
 
         embed.set_footer(text="*Movement shown for reference only -- units not cross-verified between live feed and baseline yet. Live: MLB official feed • Baseline: last 30 days, Baseball Savant")
         await interaction.followup.send(embed=embed)
+
+    async def _player_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        player_type = getattr(interaction.namespace, "player_type", None) or "batter"
+        try:
+            rows = await self._get_cached_leaderboard(player_type)
+        except Exception:
+            return []  # autocomplete failures should just show no suggestions, not error out
+
+        current_lower = current.lower()
+        matches = []
+        for r in rows:
+            csv_name = r.get("player_name", "")  # "Last, First" format
+            if current_lower in csv_name.lower():
+                # Convert to natural "First Last" for display and for the value actually submitted
+                parts = [p.strip() for p in csv_name.split(",")]
+                display_name = f"{parts[1]} {parts[0]}" if len(parts) == 2 else csv_name
+                matches.append(display_name)
+            if len(matches) >= 25:
+                break
+
+        return [app_commands.Choice(name=name, value=name) for name in matches]
 
     async def _stat_autocomplete(self, interaction: discord.Interaction, current: str):
         current_lower = current.lower()
