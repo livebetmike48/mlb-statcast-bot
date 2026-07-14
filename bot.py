@@ -146,6 +146,13 @@ class StatcastBot(discord.Client):
         )
         self.tree.add_command(vseachpitch_cmd)
 
+        matchup_cmd = app_commands.Command(
+            name="matchup",
+            description="Batter vs pitcher: his mix vs their side, their numbers vs each of his pitches",
+            callback=self._matchup_callback,
+        )
+        self.tree.add_command(matchup_cmd)
+
         vshand_cmd = app_commands.Command(
             name="vshand",
             description="Batter's split vs LHP/RHP, or pitcher's split vs LHB/RHB",
@@ -625,6 +632,95 @@ class StatcastBot(discord.Client):
                 inline=False,
             )
         embed.set_footer(text=f"{start_date} to {end_date} • min 10 pitches per type • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _matchup_callback(self, interaction: discord.Interaction, batter_name: str, pitcher_name: str,
+                                 start_date: str = None, end_date: str = None):
+        await interaction.response.defer()
+        if not start_date:
+            start_date = f"{et_date_str(0)[:4]}-01-01"
+        if not end_date:
+            end_date = et_date_str(0)
+        for label, d in [("start_date", start_date), ("end_date", end_date)]:
+            if not _validate_date(d):
+                await interaction.followup.send(f"'{d}' isn't valid for {label} -- use YYYY-MM-DD.")
+                return
+
+        try:
+            batter = await asyncio.to_thread(statcast_api.resolve_player, batter_name)
+            pitcher = await asyncio.to_thread(statcast_api.resolve_player, pitcher_name)
+        except Exception as e:
+            await interaction.followup.send(f"Player lookup failed: {e}")
+            return
+        if batter is None or pitcher is None:
+            missing = batter_name if batter is None else pitcher_name
+            await interaction.followup.send(f"No player found matching '{missing}'.")
+            return
+        if not pitcher.get("pitch_hand"):
+            await interaction.followup.send(f"Couldn't determine {pitcher['name']}'s throwing hand.")
+            return
+
+        pitcher_hand = pitcher["pitch_hand"]  # 'L' or 'R'
+        batter_side = statcast_api.effective_bat_side(batter.get("bat_side") or "R", pitcher_hand)
+
+        try:
+            batter_rows = await asyncio.to_thread(
+                statcast_api.fetch_statcast, batter["id"], False, start_date, end_date)
+            pitcher_rows = await asyncio.to_thread(
+                statcast_api.fetch_statcast, pitcher["id"], True, start_date, end_date)
+        except Exception as e:
+            await interaction.followup.send(f"Statcast fetch failed: {e}")
+            return
+
+        # Pitcher's mix vs this batter's side; batter's numbers vs this pitcher's hand
+        pitcher_vs_side = [r for r in pitcher_rows if r.get("stand") == batter_side]
+        batter_vs_hand = [r for r in batter_rows if r.get("p_throws") == pitcher_hand]
+
+        mix = statcast_api.pitch_mix_breakdown(pitcher_vs_side)
+        batter_table = statcast_api.vs_each_pitch(batter_vs_hand, min_pitches=1)
+        batter_overall = statcast_api.vs_handedness_stats(batter_rows, "p_throws", pitcher_hand)
+        pitcher_overall = statcast_api.vs_handedness_stats(pitcher_rows, "stand", batter_side)
+
+        if not mix or not batter_table:
+            await interaction.followup.send(
+                f"Not enough data: {'no pitcher data vs ' + batter_side + 'HB' if not mix else ''} "
+                f"{'no batter data vs ' + pitcher_hand + 'HP' if not batter_table else ''}".strip()
+            )
+            return
+
+        switch_note = " (switch, bats " + batter_side + " here)" if batter.get("bat_side") == "S" else ""
+        embed = discord.Embed(
+            title=f"{batter['name']} ({batter.get('bat_side', '?')}){switch_note} vs {pitcher['name']} ({pitcher_hand})",
+            color=discord.Color.gold(),
+        )
+
+        if batter_overall:
+            embed.add_field(
+                name=f"{batter['name']} overall vs {pitcher_hand}HP",
+                value=f"PA: {batter_overall['pa']} • xBA: {batter_overall.get('xba', '-')} • xwOBA: {batter_overall.get('xwoba', '-')} • Whiff: {batter_overall.get('whiff_pct', '-')}% • K: {batter_overall.get('k_pct', '-')}% • BB: {batter_overall.get('bb_pct', '-')}%",
+                inline=False,
+            )
+        if pitcher_overall:
+            embed.add_field(
+                name=f"{pitcher['name']} overall vs {batter_side}HB",
+                value=f"PA: {pitcher_overall['pa']} • xBA: {pitcher_overall.get('xba', '-')} • xwOBA: {pitcher_overall.get('xwoba', '-')} • Whiff: {pitcher_overall.get('whiff_pct', '-')}% • K: {pitcher_overall.get('k_pct', '-')}%",
+                inline=False,
+            )
+
+        # The merged view: each pitch he throws to this side, with the batter's numbers against it
+        for pt, m in mix.items():
+            b = batter_table.get(pt)
+            if b:
+                batter_line = f"{batter['name'].split()[-1]}: {b['pa_ending_on_this_pitch']} PA • xBA {b.get('xba', '-')} • xwOBA {b.get('xwoba', '-')} • Whiff {b.get('whiff_pct', '-')}% • K {b.get('k_pct', '-')}%"
+            else:
+                batter_line = f"{batter['name'].split()[-1]}: hasn't faced this pitch from {pitcher_hand}HP this season"
+            embed.add_field(
+                name=f"{pt} — {m['usage_pct']}% usage ({m['count']} thrown{', ' + str(m['avg_velo']) + ' mph' if 'avg_velo' in m else ''})",
+                value=batter_line,
+                inline=False,
+            )
+
+        embed.set_footer(text=f"{start_date} to {end_date} • Pitcher mix vs {batter_side}HB • Batter stats vs {pitcher_hand}HP • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
     async def _vshand_callback(self, interaction: discord.Interaction, player_name: str,
