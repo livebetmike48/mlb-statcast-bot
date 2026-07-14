@@ -170,12 +170,12 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     whiffs = sum(1 for r in pitch_rows if r.get("description") in WHIFF_DESCRIPTIONS)
 
     pa_rows = [r for r in pitch_rows if r.get("events")]
-    strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
+    strikeouts = sum(1 for r in pa_rows if r.get("events") in {"strikeout", "strikeout_double_play"})
     walks = sum(1 for r in pa_rows if r.get("events") in {"walk", "intent_walk"})
     hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
     balls_in_play_outs = sum(
         1 for r in pa_rows
-        if r.get("events") not in {"strikeout", "walk", "intent_walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
+        if r.get("events") not in {"strikeout", "strikeout_double_play", "walk", "intent_walk", "single", "double", "triple", "home_run", "hit_by_pitch", "sac_fly", "sac_bunt", "sac_fly_double_play", "sac_bunt_double_play", "catcher_interf"}
     )
     at_bats = hits + balls_in_play_outs + strikeouts
 
@@ -233,12 +233,12 @@ def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> d
     whiffs = sum(1 for r in filtered if r.get("description") in WHIFF_DESCRIPTIONS)
 
     pa_rows = [r for r in filtered if r.get("events")]
-    strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
+    strikeouts = sum(1 for r in pa_rows if r.get("events") in {"strikeout", "strikeout_double_play"})
     walks = sum(1 for r in pa_rows if r.get("events") in {"walk", "intent_walk"})
     hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
     balls_in_play_outs = sum(
         1 for r in pa_rows
-        if r.get("events") not in {"strikeout", "walk", "intent_walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
+        if r.get("events") not in {"strikeout", "strikeout_double_play", "walk", "intent_walk", "single", "double", "triple", "home_run", "hit_by_pitch", "sac_fly", "sac_bunt", "sac_fly_double_play", "sac_bunt_double_play", "catcher_interf"}
     )
     at_bats = hits + balls_in_play_outs + strikeouts
 
