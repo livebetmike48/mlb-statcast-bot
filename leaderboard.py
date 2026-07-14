@@ -70,6 +70,19 @@ def get_leaders(rows: list[dict], stat_key: str, limit: int = 10) -> list[dict]:
     return parsed[:limit]
 
 
+def _name_matches(input_name: str, csv_name: str) -> bool:
+    """
+    CSV names are formatted 'Last, First' (confirmed from real data:
+    'Fairchild, Stuart'), but people naturally type 'First Last'. A plain
+    substring check fails since 'juan soto' never appears contiguously in
+    'soto, juan' -- so instead, check that every word from the input
+    appears somewhere in the CSV name, order-independent.
+    """
+    input_words = set(input_name.lower().replace(",", "").split())
+    csv_words = set(csv_name.lower().replace(",", "").split())
+    return input_words.issubset(csv_words)
+
+
 def get_percentile(rows: list[dict], stat_key: str, player_name: str) -> dict | None:
     """
     Computes this player's percentile rank (0-100) among all qualified
@@ -91,7 +104,7 @@ def get_percentile(rows: list[dict], stat_key: str, player_name: str) -> dict | 
         except ValueError:
             continue
         values.append(v)
-        if player_name.lower() in r.get("player_name", "").lower():
+        if _name_matches(player_name, r.get("player_name", "")):
             target_value = v
 
     if target_value is None or not values:
