@@ -39,8 +39,29 @@ def et_date_str(offset_days: int = 0) -> str:
     return et.strftime("%Y-%m-%d")
 
 
+import re
+
+
+def _validate_date(date_str: str) -> bool:
+    """Strict YYYY-MM-DD check -- Savant's API expects this exact format.
+    A malformed date (e.g. MM-DD-YYYY) can silently fail to parse on
+    Savant's end and default to a much wider range instead of erroring
+    clearly, which is exactly what caused a 3-month request to return
+    roughly 9x the expected pitch count."""
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", date_str))
+
+
 async def _resolve_and_fetch(interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
     """Shared resolution + fetch logic, returns (player, rows) or sends an error and returns None."""
+    for label, date_str in [("start_date", start_date), ("end_date", end_date)]:
+        if not _validate_date(date_str):
+            await interaction.followup.send(
+                f"'{date_str}' isn't in the right format for {label}. Use YYYY-MM-DD exactly "
+                f"(e.g. 2026-04-10), not MM-DD-YYYY or any other format -- a malformed date can "
+                f"silently return wildly wrong, oversized results instead of an error."
+            )
+            return None
+
     try:
         player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
     except Exception as e:
@@ -517,10 +538,15 @@ class StatcastBot(discord.Client):
 
         embed = discord.Embed(title=f"{player['name']} vs {pt}", color=discord.Color.green())
         embed.add_field(name="Pitches seen", value=str(vs_result["pitches_seen"]), inline=True)
+        embed.add_field(name="PA ending on this pitch", value=str(vs_result["pa_ending_on_this_pitch"]), inline=True)
         if "avg" in vs_result:
             embed.add_field(name="AVG", value=str(vs_result["avg"]), inline=True)
+        if "xwoba" in vs_result:
+            embed.add_field(name="xwOBA", value=str(vs_result["xwoba"]), inline=True)
         if "whiff_pct" in vs_result:
             embed.add_field(name="Whiff %", value=f"{vs_result['whiff_pct']}%", inline=True)
+        if "k_pct" in vs_result:
+            embed.add_field(name="K %", value=f"{vs_result['k_pct']}%", inline=True)
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
