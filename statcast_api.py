@@ -105,12 +105,21 @@ def fetch_percentile_leaderboard(player_type: str, year: int, team: str = "") ->
 
 
 
-SWING_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul", "foul_tip", "hit_into_play"}
+NON_PA_EVENTS = {
+    "caught_stealing_2b", "caught_stealing_3b", "caught_stealing_home",
+    "pickoff_1b", "pickoff_2b", "pickoff_3b",
+    "pickoff_caught_stealing_2b", "pickoff_caught_stealing_3b", "pickoff_caught_stealing_home",
+    "stolen_base_2b", "stolen_base_3b", "stolen_base_home",
+    "wild_pitch", "passed_ball", "truncated_pa", "game_advisory", "runner_double_play", "other_advance",
+}
+
+SWING_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul", "foul_tip", "hit_into_play",
+                      "foul_bunt", "missed_bunt", "bunt_foul_tip"}
 # foul_tip counts as a whiff in Savant's definition -- empirically confirmed:
 # with it, Soto vs RHP computes 17.3% vs the real 17.4% (residue is data
 # vintage); without it, 15.4%. His vs-LHP number matched exactly either way
 # because he had no foul tips against lefties.
-WHIFF_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul_tip"}
+WHIFF_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul_tip", "missed_bunt"}
 
 
 def pitch_mix_breakdown(rows: list[dict]) -> dict:
@@ -169,7 +178,7 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     swings = sum(1 for r in pitch_rows if r.get("description") in SWING_DESCRIPTIONS)
     whiffs = sum(1 for r in pitch_rows if r.get("description") in WHIFF_DESCRIPTIONS)
 
-    pa_rows = [r for r in pitch_rows if r.get("events")]
+    pa_rows = [r for r in pitch_rows if r.get("events") and r.get("events") not in NON_PA_EVENTS]
     strikeouts = sum(1 for r in pa_rows if r.get("events") in {"strikeout", "strikeout_double_play"})
     walks = sum(1 for r in pa_rows if r.get("events") in {"walk", "intent_walk"})
     hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
@@ -271,7 +280,7 @@ def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> d
     swings = sum(1 for r in filtered if r.get("description") in SWING_DESCRIPTIONS)
     whiffs = sum(1 for r in filtered if r.get("description") in WHIFF_DESCRIPTIONS)
 
-    pa_rows = [r for r in filtered if r.get("events")]
+    pa_rows = [r for r in filtered if r.get("events") and r.get("events") not in NON_PA_EVENTS]
     strikeouts = sum(1 for r in pa_rows if r.get("events") in {"strikeout", "strikeout_double_play"})
     walks = sum(1 for r in pa_rows if r.get("events") in {"walk", "intent_walk"})
     hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
