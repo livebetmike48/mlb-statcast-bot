@@ -105,6 +105,86 @@ def fetch_percentile_leaderboard(player_type: str, year: int, team: str = "") ->
 
 
 
+SWING_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked", "foul", "foul_tip", "hit_into_play"}
+WHIFF_DESCRIPTIONS = {"swinging_strike", "swinging_strike_blocked"}
+
+
+def pitch_mix_breakdown(rows: list[dict]) -> dict:
+    """
+    A pitcher's pitch usage breakdown: % thrown, avg velocity, and whiff
+    rate per pitch type. Whiff rate = whiffs / swings (not whiffs / total
+    pitches, which would understate it -- a batter can only whiff on a
+    pitch they actually swung at).
+    """
+    total_pitches = len(rows)
+    if total_pitches == 0:
+        return {}
+
+    by_type: dict[str, dict] = {}
+    for r in rows:
+        pt = r.get("pitch_type")
+        if not pt:
+            continue
+        bucket = by_type.setdefault(pt, {"count": 0, "speeds": [], "swings": 0, "whiffs": 0})
+        bucket["count"] += 1
+        speed = _safe_float(r.get("release_speed"))
+        if speed is not None:
+            bucket["speeds"].append(speed)
+        desc = r.get("description")
+        if desc in SWING_DESCRIPTIONS:
+            bucket["swings"] += 1
+        if desc in WHIFF_DESCRIPTIONS:
+            bucket["whiffs"] += 1
+
+    result = {}
+    for pt, b in by_type.items():
+        entry = {
+            "usage_pct": round(b["count"] / total_pitches * 100, 1),
+            "count": b["count"],
+        }
+        if b["speeds"]:
+            entry["avg_velo"] = round(sum(b["speeds"]) / len(b["speeds"]), 1)
+        if b["swings"] > 0:
+            entry["whiff_pct"] = round(b["whiffs"] / b["swings"] * 100, 1)
+        result[pt] = entry
+    return dict(sorted(result.items(), key=lambda x: -x[1]["count"]))
+
+
+def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
+    """
+    A batter's performance against ONE specific pitch type: whiff rate,
+    and batting average (using the same correct at-bat denominator as the
+    xBA fix -- strikeouts count as automatic outs, walks are excluded).
+    """
+    pitch_rows = [r for r in rows if r.get("pitch_type") == pitch_type]
+    if not pitch_rows:
+        return None
+
+    swings = sum(1 for r in pitch_rows if r.get("description") in SWING_DESCRIPTIONS)
+    whiffs = sum(1 for r in pitch_rows if r.get("description") in WHIFF_DESCRIPTIONS)
+
+    pa_rows = [r for r in pitch_rows if r.get("events")]
+    strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
+    walks = sum(1 for r in pa_rows if r.get("events") == "walk")
+    hits = sum(1 for r in pa_rows if r.get("events") in {"single", "double", "triple", "home_run"})
+    balls_in_play_outs = sum(
+        1 for r in pa_rows
+        if r.get("events") not in {"strikeout", "walk", "single", "double", "triple", "home_run", "hit_by_pitch"}
+    )
+    at_bats = hits + balls_in_play_outs + strikeouts
+
+    result = {
+        "pitches_seen": len(pitch_rows),
+        "swings": swings,
+        "pa_ending_on_this_pitch": len(pa_rows),
+    }
+    if swings > 0:
+        result["whiff_pct"] = round(whiffs / swings * 100, 1)
+    if at_bats > 0:
+        result["avg"] = round(hits / at_bats, 3)
+    return result
+
+
 def resolve_player(name: str) -> dict | None:
     """Returns {'id':, 'name':, 'is_pitcher': bool} or None if not found."""
     resp = requests.get(PEOPLE_SEARCH, params={"names": name}, timeout=15)
