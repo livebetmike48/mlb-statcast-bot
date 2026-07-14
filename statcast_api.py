@@ -229,7 +229,7 @@ def fetch_statcast(player_id: int, is_pitcher: bool, start_date: str, end_date: 
     """Returns a list of pitch-level dicts (using DictReader for clean field access)."""
     params = {
         "all": "true", "hfPT": "", "hfAB": "", "hfBBT": "", "hfPR": "", "hfZ": "",
-        "stadium": "", "hfBBL": "", "hfNewZones": "", "hfGT": "R|PO|S|=",
+        "stadium": "", "hfBBL": "", "hfNewZones": "", "hfGT": "R|",
         "hfSea": "", "hfSit": "", "hfOuts": "",
         "opponent": "", "pitcher_throws": "", "batter_stands": "", "hfSA": "",
         "game_date_gt": start_date, "game_date_lt": end_date,
