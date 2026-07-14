@@ -102,6 +102,41 @@ def fetch_percentile_leaderboard(player_type: str, year: int) -> str:
     return resp.text
 
 
+def real_stat_values(rows: list[dict]) -> dict:
+    """
+    Computes actual real stat values (not percentiles) from pitch-level
+    Statcast data -- the same proven fetch mechanism already used for
+    /barrels and /luck. Plate appearances are counted as rows with a
+    non-empty 'events' field (only the final pitch of a PA has one).
+    """
+    pa_rows = [r for r in rows if r.get("events")]
+    total_pa = len(pa_rows)
+    if total_pa == 0:
+        return {}
+
+    strikeouts = sum(1 for r in pa_rows if r.get("events") == "strikeout")
+    walks = sum(1 for r in pa_rows if r.get("events") == "walk")
+
+    batted_balls = [r for r in rows if _safe_float(r.get("launch_speed")) is not None]
+    exit_velos = [_safe_float(r["launch_speed"]) for r in batted_balls]
+    hard_hit = sum(1 for ev in exit_velos if ev >= 95.0)
+
+    xba_values = [_safe_float(r.get("estimated_ba_using_speedangle")) for r in batted_balls]
+    xba_values = [v for v in xba_values if v is not None]
+
+    result = {
+        "k_pct": round(strikeouts / total_pa * 100, 1),
+        "bb_pct": round(walks / total_pa * 100, 1),
+        "pa": total_pa,
+    }
+    if exit_velos:
+        result["exit_velo"] = round(sum(exit_velos) / len(exit_velos), 1)
+        result["hard_hit_pct"] = round(hard_hit / len(exit_velos) * 100, 1)
+    if xba_values:
+        result["xba"] = round(sum(xba_values) / len(xba_values), 3)
+    return result
+
+
 def resolve_player(name: str) -> dict | None:
     """Returns {'id':, 'name':, 'is_pitcher': bool} or None if not found."""
     resp = requests.get(PEOPLE_SEARCH, params={"names": name}, timeout=15)
