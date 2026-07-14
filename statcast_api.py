@@ -182,6 +182,9 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     xwoba_values = [_safe_float(r.get("estimated_woba_using_speedangle")) for r in pitch_rows]
     xwoba_values = [v for v in xwoba_values if v is not None]
 
+    xba_batted = [r for r in pitch_rows if r.get("description") == "hit_into_play"]
+    xba_numerator = sum(_safe_float(r.get("estimated_ba_using_speedangle"), 0.0) for r in xba_batted)
+
     result = {
         "pitches_seen": len(pitch_rows),
         "swings": swings,
@@ -191,10 +194,34 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
         result["whiff_pct"] = round(whiffs / swings * 100, 1)
     if at_bats > 0:
         result["avg"] = round(hits / at_bats, 3)
+        result["xba"] = round(xba_numerator / at_bats, 3)
     if pa_rows:
         result["k_pct"] = round(strikeouts / len(pa_rows) * 100, 1)
     if xwoba_values:
         result["xwoba"] = round(sum(xwoba_values) / len(xwoba_values), 3)
+    return result
+
+
+def vs_each_pitch(rows: list[dict], min_pitches: int = 10) -> dict:
+    """
+    The full StraightBettin-style table: stats against EVERY pitch type at
+    once, sorted by pitches seen. Reuses the exact per-pitch calculation
+    already validated against real Savant data (Soto, Witt). min_pitches
+    hides tiny-sample noise rows (a 2-pitch slurve tells you nothing).
+    """
+    pitch_types = {}
+    for r in rows:
+        pt = r.get("pitch_type")
+        if pt:
+            pitch_types[pt] = pitch_types.get(pt, 0) + 1
+
+    result = {}
+    for pt, count in sorted(pitch_types.items(), key=lambda x: -x[1]):
+        if count < min_pitches:
+            continue
+        stats = vs_pitch_type_stats(rows, pt)
+        if stats:
+            result[pt] = stats
     return result
 
 
