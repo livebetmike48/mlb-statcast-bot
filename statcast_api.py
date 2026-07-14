@@ -318,7 +318,8 @@ def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> d
 
 
 def resolve_player(name: str) -> dict | None:
-    """Returns {'id':, 'name':, 'is_pitcher': bool} or None if not found."""
+    """Returns {'id', 'name', 'is_pitcher', 'bat_side', 'pitch_hand'} or None.
+    bat_side is 'L'/'R'/'S' (switch); pitch_hand is 'L'/'R'."""
     resp = requests.get(PEOPLE_SEARCH, params={"names": name}, timeout=15)
     resp.raise_for_status()
     people = resp.json().get("people", [])
@@ -326,7 +327,21 @@ def resolve_player(name: str) -> dict | None:
         return None
     p = people[0]
     position_code = (p.get("primaryPosition") or {}).get("code")
-    return {"id": p["id"], "name": p.get("fullName", name), "is_pitcher": position_code == "1"}
+    return {
+        "id": p["id"],
+        "name": p.get("fullName", name),
+        "is_pitcher": position_code == "1",
+        "bat_side": (p.get("batSide") or {}).get("code"),
+        "pitch_hand": (p.get("pitchHand") or {}).get("code"),
+    }
+
+
+def effective_bat_side(bat_side: str, opposing_pitch_hand: str) -> str:
+    """A switch hitter ('S') bats from the opposite side of the pitcher's
+    hand; otherwise their listed side."""
+    if bat_side == "S":
+        return "L" if opposing_pitch_hand == "R" else "R"
+    return bat_side
 
 
 def fetch_statcast(player_id: int, is_pitcher: bool, start_date: str, end_date: str) -> list[dict]:
