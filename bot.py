@@ -524,8 +524,11 @@ class StatcastBot(discord.Client):
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
-    async def _checkscope_callback(self, interaction: discord.Interaction, player_name: str, single_date: str):
+    async def _checkscope_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str = None):
         await interaction.response.defer()
+        if not end_date:
+            end_date = start_date
+
         try:
             player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
         except Exception as e:
@@ -537,24 +540,28 @@ class StatcastBot(discord.Client):
 
         try:
             rows = await asyncio.to_thread(
-                statcast_api.fetch_statcast, player["id"], player["is_pitcher"], single_date, single_date
+                statcast_api.fetch_statcast, player["id"], player["is_pitcher"], start_date, end_date
             )
         except Exception as e:
             await interaction.followup.send(f"Fetch failed: {e}")
             return
 
         unique_batters = set(r.get("batter") for r in rows)
-        unique_pitchers = set(r.get("pitcher") for r in rows)
-        sample_names = set(r.get("player_name") for r in rows)
+        unique_dates = set(r.get("game_date") for r in rows)
+        date_counts = {}
+        for r in rows:
+            d = r.get("game_date")
+            date_counts[d] = date_counts.get(d, 0) + 1
+        max_date, max_count = max(date_counts.items(), key=lambda x: x[1]) if date_counts else (None, 0)
 
         msg = (
-            f"**Scope check: {player['name']} (ID {player['id']}) on {single_date}**\n\n"
+            f"**Scope check: {player['name']} (ID {player['id']}), {start_date} to {end_date}**\n\n"
             f"Total rows returned: {len(rows)}\n"
-            f"Unique batter IDs in results: {len(unique_batters)}\n"
-            f"Unique pitcher IDs in results: {len(unique_pitchers)}\n"
-            f"Sample player_name values seen: {list(sample_names)[:5]}\n\n"
-            f"If this player played a normal game, ~15-25 rows and mostly ONE batter ID "
-            f"(if he's a batter) is correct scope. Many different batter IDs = scope bug."
+            f"Unique batter IDs: {len(unique_batters)}\n"
+            f"Unique game dates covered: {len(unique_dates)}\n"
+            f"Highest single-day count: {max_count} rows on {max_date}\n"
+            f"(A single real game should be roughly 15-25 rows for a batter -- "
+            f"if any single date shows way more than that, duplicates are being returned for that day.)"
         )
         await interaction.followup.send(msg[:2000])
 
