@@ -25,22 +25,30 @@ BATTER_STAT_COLUMNS = {
     "bb_pct": ("bb_percent", True), # already correctly oriented -- don't re-invert
 }
 
-# Best-informed guess based on Savant's typical pitcher percentile columns
-# (same naming convention as batters, where applicable) -- NOT yet verified
-# against live data the way the batter columns were. Test with
-# /checkleaderboard type:pitcher before trusting these blindly.
+# Confirmed real column names from a live test (587 pitchers, 22 columns).
+# Several columns share the exact same name as the batter version (xwoba,
+# xba, xslg, exit_velocity, hard_hit_percent, etc.) rather than having an
+# "_against" suffix as originally guessed -- corrected here to match what
+# was actually confirmed live, not assumed.
 PITCHER_STAT_COLUMNS = {
     "xera": ("xera", True),
-    "xba_against": ("xba", True),
-    "xslg_against": ("xslg", True),
-    "xwoba_against": ("xwoba", True),
-    "exit_velo_against": ("exit_velocity", True),
-    "hard_hit_pct_against": ("hard_hit_percent", True),
+    "xwoba": ("xwoba", True),
+    "xba": ("xba", True),
+    "xslg": ("xslg", True),
+    "xiso": ("xiso", True),
+    "xobp": ("xobp", True),
+    "barrel_pct": ("brl_percent", True),
+    "exit_velo": ("exit_velocity", True),
+    "max_ev": ("max_ev", True),
+    "hard_hit_pct": ("hard_hit_percent", True),
     "k_pct": ("k_percent", True),
     "bb_pct": ("bb_percent", True),
     "whiff_pct": ("whiff_percent", True),
     "chase_pct": ("chase_percent", True),
-    "fastball_velo": ("fastball_velocity", True),
+    "fastball_velo": ("fb_velocity", True),
+    "fastball_spin": ("fb_spin", True),
+    "curve_spin": ("curve_spin", True),
+    "arm_strength": ("arm_strength", True),
 }
 
 # Kept for backward compatibility
