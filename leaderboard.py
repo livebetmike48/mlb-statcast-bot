@@ -55,12 +55,13 @@ PITCHER_STAT_COLUMNS = {
 STAT_COLUMNS = BATTER_STAT_COLUMNS
 
 
-def fetch_leaderboard(player_type: str = "batter", year: int = 2026) -> list[dict]:
+def fetch_leaderboard(player_type: str = "batter", year: int = 2026, team: str = "") -> list[dict]:
     """Returns qualified players only (rows with actual data, not the
-    empty placeholder rows for unqualified players)."""
+    empty placeholder rows for unqualified players). team: standard MLB
+    abbreviation (e.g. NYY, BOS) to filter to one team, empty for all."""
     resp = requests.get(
         LEADERBOARD_URL,
-        params={"type": player_type, "year": year, "team": "", "csv": "true"},
+        params={"type": player_type, "year": year, "team": team, "csv": "true"},
         timeout=20,
     )
     resp.raise_for_status()
@@ -75,10 +76,11 @@ def fetch_leaderboard(player_type: str = "batter", year: int = 2026) -> list[dic
     return [r for r in all_rows if r.get("xwoba")]
 
 
-def get_leaders(rows: list[dict], stat_key: str, limit: int = 10, stat_columns: dict = None) -> list[dict]:
+def get_leaders(rows: list[dict], stat_key: str, limit: int = 10, stat_columns: dict = None, worst: bool = False) -> list[dict]:
     """Top N players by a given stat's percentile (using the friendly key).
     These are Savant's own percentile scores (0-100), confirmed -- not raw
-    stat values, so ties are common at the extremes."""
+    stat values, so ties are common at the extremes. Set worst=True for
+    bottom N instead of top N."""
     stat_columns = stat_columns or BATTER_STAT_COLUMNS
     if stat_key not in stat_columns:
         return []
@@ -95,7 +97,7 @@ def get_leaders(rows: list[dict], stat_key: str, limit: int = 10, stat_columns: 
             continue
         parsed.append({"name": r.get("player_name", "?"), "percentile": round(value)})
 
-    parsed.sort(key=lambda p: p["percentile"], reverse=True)
+    parsed.sort(key=lambda p: p["percentile"], reverse=not worst)
     return parsed[:limit]
 
 
