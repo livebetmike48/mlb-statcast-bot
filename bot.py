@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 import statcast_api
 import analysis
+import leaderboard
 import storage
 
 load_dotenv()
@@ -18,6 +19,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("statcast_bot")
 
 intents = discord.Intents.default()
+
+_leaderboard_cache = {"rows": None, "fetched_at": None}
 
 
 def et_date_str(offset_days: int = 0) -> str:
@@ -104,6 +107,21 @@ class StatcastBot(discord.Client):
             callback=self._checkleaderboard_callback,
         )
         self.tree.add_command(checkleaderboard_cmd)
+
+        leaders_cmd = app_commands.Command(
+            name="leaders",
+            description="Top 10 batters in a given Statcast stat this season",
+            callback=self._leaders_callback,
+        )
+        self.tree.add_command(leaders_cmd)
+        leaders_cmd.autocomplete("stat")(self._stat_autocomplete)
+
+        percentile_cmd = app_commands.Command(
+            name="percentile",
+            description="A batter's percentile rank across every Statcast stat this season",
+            callback=self._percentile_callback,
+        )
+        self.tree.add_command(percentile_cmd)
 
         try:
             guild_id = os.getenv("GUILD_ID")
@@ -278,6 +296,69 @@ class StatcastBot(discord.Client):
             embed.description = "✅ No significant drop detected"
 
         embed.set_footer(text="*Movement shown for reference only -- units not cross-verified between live feed and baseline yet. Live: MLB official feed • Baseline: last 30 days, Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _stat_autocomplete(self, interaction: discord.Interaction, current: str):
+        current_lower = current.lower()
+        matches = [s for s in leaderboard.STAT_COLUMNS if current_lower in s.lower()][:25]
+        return [app_commands.Choice(name=s, value=s) for s in matches]
+
+    async def _get_cached_leaderboard(self):
+        global _leaderboard_cache
+        now = datetime.now(timezone.utc)
+        if _leaderboard_cache["rows"] is not None and (now - _leaderboard_cache["fetched_at"]).total_seconds() < 3600:
+            return _leaderboard_cache["rows"]
+        rows = await asyncio.to_thread(leaderboard.fetch_leaderboard, "batter", 2026)
+        _leaderboard_cache = {"rows": rows, "fetched_at": now}
+        return rows
+
+    async def _leaders_callback(self, interaction: discord.Interaction, stat: str):
+        await interaction.response.defer()
+        if stat not in leaderboard.STAT_COLUMNS:
+            await interaction.followup.send(f"Unknown stat '{stat}'. Try: {', '.join(leaderboard.STAT_COLUMNS)}")
+            return
+
+        try:
+            rows = await self._get_cached_leaderboard()
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't fetch leaderboard: {e}")
+            return
+
+        leaders = leaderboard.get_leaders(rows, stat, limit=10)
+        if not leaders:
+            await interaction.followup.send(f"No qualified players found for '{stat}'.")
+            return
+
+        lines = [f"{i+1}. {p['name']} — {p['value']}" for i, p in enumerate(leaders)]
+        embed = discord.Embed(title=f"MLB Leaders — {stat}", description="\n".join(lines), color=discord.Color.purple())
+        embed.set_footer(text="2026 season, qualified batters • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _percentile_callback(self, interaction: discord.Interaction, player_name: str):
+        await interaction.response.defer()
+        try:
+            rows = await self._get_cached_leaderboard()
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't fetch leaderboard: {e}")
+            return
+
+        results = {}
+        for stat_key in leaderboard.STAT_COLUMNS:
+            result = leaderboard.get_percentile(rows, stat_key, player_name)
+            if result:
+                results[stat_key] = result
+
+        if not results:
+            await interaction.followup.send(f"No qualified data found for '{player_name}' -- check spelling, or they may not meet the PA threshold.")
+            return
+
+        embed = discord.Embed(title=f"{player_name} — Percentile Rankings", color=discord.Color.teal())
+        for stat_key, result in results.items():
+            pct = result["percentile"]
+            bar_filled = "🟩" * (pct // 10)
+            bar_empty = "⬜" * (10 - pct // 10)
+            embed.add_field(name=f"{stat_key}: {result['value']}", value=f"{bar_filled}{bar_empty} {pct}th percentile", inline=False)
+        embed.set_footer(text=f"2026 season, among {list(results.values())[0]['sample_size']} qualified batters • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
     async def _setchannel_callback(self, interaction: discord.Interaction):
