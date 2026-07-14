@@ -146,6 +146,13 @@ class StatcastBot(discord.Client):
         )
         self.tree.add_command(vshand_cmd)
 
+        checkwhiff_cmd = app_commands.Command(
+            name="checkwhiff",
+            description="Debug: show every pitch description count + whiff% under candidate definitions",
+            callback=self._checkwhiff_callback,
+        )
+        self.tree.add_command(checkwhiff_cmd)
+
         checkscope_cmd = app_commands.Command(
             name="checkscope",
             description="Debug: verify a fetch is correctly scoped to one player, not their whole team",
@@ -603,6 +610,53 @@ class StatcastBot(discord.Client):
         embed.description = "\n".join(lines)
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
+
+    async def _checkwhiff_callback(self, interaction: discord.Interaction, player_name: str,
+                                    hand: Literal["L", "R", "all"] = "all",
+                                    start_date: str = None, end_date: str = None):
+        await interaction.response.defer()
+        if not start_date:
+            start_date = f"{et_date_str(0)[:4]}-01-01"
+        if not end_date:
+            end_date = et_date_str(0)
+
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        hand_field = "stand" if player["is_pitcher"] else "p_throws"
+        if hand in ("L", "R"):
+            rows = [r for r in rows if r.get(hand_field) == hand]
+
+        # Count every distinct description value
+        desc_counts = {}
+        for r in rows:
+            d = r.get("description") or "(empty)"
+            desc_counts[d] = desc_counts.get(d, 0) + 1
+        desc_sorted = sorted(desc_counts.items(), key=lambda x: -x[1])
+
+        # Candidate swing/whiff definitions to test against the known real number
+        base_swings = {"swinging_strike", "swinging_strike_blocked", "foul", "foul_tip", "hit_into_play"}
+        base_whiffs = {"swinging_strike", "swinging_strike_blocked"}
+
+        candidates = {
+            "current (ours)": (base_swings, base_whiffs),
+            "+foul_tip as whiff": (base_swings, base_whiffs | {"foul_tip"}),
+            "+bunt fouls/misses as swings": (base_swings | {"foul_bunt", "missed_bunt", "bunt_foul_tip"}, base_whiffs | {"missed_bunt"}),
+            "-foul_tip from swings": (base_swings - {"foul_tip"}, base_whiffs),
+        }
+
+        lines = [f"**Whiff diagnostic: {player['name']}, hand={hand}, {start_date} to {end_date}**\n"]
+        lines.append("Description counts: " + ", ".join(f"{d}: {c}" for d, c in desc_sorted))
+        lines.append("")
+        for label, (swing_set, whiff_set) in candidates.items():
+            swings = sum(1 for r in rows if r.get("description") in swing_set)
+            whiffs = sum(1 for r in rows if r.get("description") in whiff_set)
+            pct = round(whiffs / swings * 100, 1) if swings else 0
+            lines.append(f"{label}: {whiffs}/{swings} = {pct}%")
+
+        await interaction.followup.send("\n".join(lines)[:2000])
 
     async def _checkscope_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str = None):
         await interaction.response.defer()
