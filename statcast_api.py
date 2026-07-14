@@ -182,8 +182,18 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
     xwoba_values = [_safe_float(r.get("estimated_woba_using_speedangle")) for r in pitch_rows]
     xwoba_values = [v for v in xwoba_values if v is not None]
 
-    xba_batted = [r for r in pitch_rows if r.get("description") == "hit_into_play"]
-    xba_numerator = sum(_safe_float(r.get("estimated_ba_using_speedangle"), 0.0) for r in xba_batted)
+    # xBA denominator: Savant EXCLUDES untracked batted balls (missing the
+    # expected-BA estimate) rather than counting them as zeros -- derived
+    # empirically: Soto vs FF, our numerator / 50 gave .397 but / 49 gives
+    # Savant's exact .405 (one untracked ball); same on SI (.318 -> .330);
+    # the 7 pitch types with no untracked balls matched exactly either way.
+    xba_tracked = [
+        v for v in (
+            _safe_float(r.get("estimated_ba_using_speedangle"))
+            for r in pitch_rows if r.get("description") == "hit_into_play"
+        ) if v is not None
+    ]
+    xba_numerator = sum(xba_tracked)
 
     result = {
         "pitches_seen": len(pitch_rows),
@@ -194,7 +204,9 @@ def vs_pitch_type_stats(rows: list[dict], pitch_type: str) -> dict | None:
         result["whiff_pct"] = round(whiffs / swings * 100, 1)
     if at_bats > 0:
         result["avg"] = round(hits / at_bats, 3)
-        result["xba"] = round(xba_numerator / at_bats, 3)
+    xba_at_bats = len(xba_tracked) + strikeouts
+    if xba_at_bats > 0:
+        result["xba"] = round(xba_numerator / xba_at_bats, 3)
     if pa_rows:
         result["k_pct"] = round(strikeouts / len(pa_rows) * 100, 1)
     if xwoba_values:
@@ -269,8 +281,13 @@ def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> d
     )
     at_bats = hits + balls_in_play_outs + strikeouts
 
-    xba_batted = [r for r in filtered if r.get("description") == "hit_into_play"]
-    xba_numerator = sum(_safe_float(r.get("estimated_ba_using_speedangle"), 0.0) for r in xba_batted)
+    xba_tracked = [
+        v for v in (
+            _safe_float(r.get("estimated_ba_using_speedangle"))
+            for r in filtered if r.get("description") == "hit_into_play"
+        ) if v is not None
+    ]
+    xba_numerator = sum(xba_tracked)
 
     xwoba_values = [_safe_float(r.get("estimated_woba_using_speedangle")) for r in filtered]
     xwoba_values = [v for v in xwoba_values if v is not None]
@@ -278,7 +295,9 @@ def vs_handedness_stats(rows: list[dict], hand_field: str, hand_value: str) -> d
     result = {"pa": len(pa_rows)}
     if at_bats > 0:
         result["avg"] = round(hits / at_bats, 3)
-        result["xba"] = round(xba_numerator / at_bats, 3)
+    xba_at_bats = len(xba_tracked) + strikeouts
+    if xba_at_bats > 0:
+        result["xba"] = round(xba_numerator / xba_at_bats, 3)
     if swings > 0:
         result["whiff_pct"] = round(whiffs / swings * 100, 1)
     if pa_rows:
