@@ -89,14 +89,16 @@ def get_live_pitch_velocity(game_pk: int, pitcher_id: int) -> dict:
     return {pt: metrics["speed"] for pt, metrics in full.items()}
 
 
-def fetch_percentile_leaderboard(player_type: str, year: int) -> str:
+def fetch_percentile_leaderboard(player_type: str, year: int, team: str = "") -> str:
     """
     Raw text response from Savant's percentile-rankings leaderboard,
-    confirmed as a real live page. Testing whether the &csv=true convention
-    (same pattern as the statcast_search CSV export) works here too.
+    confirmed as a real live page. The team parameter was already visibly
+    part of the confirmed working URL (as an empty value) -- passing a
+    real team abbreviation to filter by team, using the same confirmed
+    &csv=true convention.
     """
     url = "https://baseballsavant.mlb.com/leaderboard/percentile-rankings"
-    params = {"type": player_type, "year": year, "team": "", "csv": "true"}
+    params = {"type": player_type, "year": year, "team": team, "csv": "true"}
     resp = requests.get(url, params=params, timeout=20)
     resp.raise_for_status()
     return resp.text
