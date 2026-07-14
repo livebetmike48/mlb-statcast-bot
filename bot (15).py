@@ -1,0 +1,331 @@
+import os
+import logging
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+import discord
+from discord import app_commands
+from dotenv import load_dotenv
+
+import statcast_api
+import analysis
+import storage
+
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("statcast_bot")
+
+intents = discord.Intents.default()
+
+
+def et_date_str(offset_days: int = 0) -> str:
+    et = datetime.now(timezone.utc) - timedelta(hours=4)
+    et += timedelta(days=offset_days)
+    return et.strftime("%Y-%m-%d")
+
+
+async def _resolve_and_fetch(interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
+    """Shared resolution + fetch logic, returns (player, rows) or sends an error and returns None."""
+    try:
+        player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
+    except Exception as e:
+        await interaction.followup.send(f"Player lookup failed: {e}")
+        return None
+
+    if player is None:
+        await interaction.followup.send(f"No player found matching '{player_name}'.")
+        return None
+
+    try:
+        rows = await asyncio.to_thread(
+            statcast_api.fetch_statcast, player["id"], player["is_pitcher"], start_date, end_date
+        )
+    except Exception as e:
+        await interaction.followup.send(f"Statcast fetch failed: {e}")
+        return None
+
+    if not rows:
+        await interaction.followup.send(
+            f"No Statcast data found for {player['name']} between {start_date} and {end_date}."
+        )
+        return None
+
+    return player, rows
+
+
+class StatcastBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        storage.init_db()
+
+        barrels_cmd = app_commands.Command(
+            name="barrels",
+            description="Quality of contact: exit velo, launch angle, hard-hit rate",
+            callback=self._barrels_callback,
+        )
+        self.tree.add_command(barrels_cmd)
+
+        luck_cmd = app_commands.Command(
+            name="luck",
+            description="Actual vs expected wOBA -- is this hitter over/underperforming?",
+            callback=self._luck_callback,
+        )
+        self.tree.add_command(luck_cmd)
+
+        velo_cmd = app_commands.Command(
+            name="velo",
+            description="Pitcher velocity trend by pitch type over a date range",
+            callback=self._velo_callback,
+        )
+        self.tree.add_command(velo_cmd)
+
+        livevelo_cmd = app_commands.Command(
+            name="livevelo",
+            description="Check if a pitcher's velocity is down live, right now, vs their recent baseline",
+            callback=self._livevelo_callback,
+        )
+        self.tree.add_command(livevelo_cmd)
+
+        setchannel_cmd = app_commands.Command(
+            name="setchannel",
+            description="Set this channel (reserved for future automatic posts)",
+            callback=self._setchannel_callback,
+        )
+        self.tree.add_command(setchannel_cmd)
+
+        checkleaderboard_cmd = app_commands.Command(
+            name="checkleaderboard",
+            description="Debug: test Savant's percentile-rankings leaderboard CSV export",
+            callback=self._checkleaderboard_callback,
+        )
+        self.tree.add_command(checkleaderboard_cmd)
+
+        try:
+            guild_id = os.getenv("GUILD_ID")
+            if guild_id:
+                guild = discord.Object(id=int(guild_id))
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info("Synced %d slash commands to guild %s", len(synced), guild_id)
+            else:
+                synced = await self.tree.sync()
+                log.info("Synced %d slash commands globally", len(synced))
+        except Exception as e:
+            log.error("Slash command sync failed: %s", e)
+
+    async def _barrels_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
+        await interaction.response.defer()
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        qoc = analysis.quality_of_contact(rows)
+        if qoc["batted_balls"] == 0:
+            await interaction.followup.send(f"{player['name']}: no batted-ball events found in that range.")
+            return
+
+        embed = discord.Embed(title=f"{player['name']} — Quality of Contact", color=discord.Color.blue())
+        embed.add_field(name="Batted Balls", value=str(qoc["batted_balls"]), inline=True)
+        embed.add_field(name="Avg Exit Velo", value=f"{qoc['avg_exit_velo']} mph", inline=True)
+        embed.add_field(name="Avg Launch Angle", value=f"{qoc['avg_launch_angle']}°", inline=True)
+        embed.add_field(name="Hard-Hit Rate (95+ mph)", value=f"{qoc['hard_hit_rate']}%", inline=True)
+        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _luck_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
+        await interaction.response.defer()
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        gap_result = analysis.expected_vs_actual(rows)
+        if gap_result["gap"] is None:
+            await interaction.followup.send(f"{player['name']}: not enough data to compute actual vs expected wOBA.")
+            return
+
+        gap = gap_result["gap"]
+        if gap > 0.02:
+            verdict = "🍀 Overperforming (getting a bit lucky)"
+        elif gap < -0.02:
+            verdict = "😤 Underperforming (due for positive regression)"
+        else:
+            verdict = "✅ Performing about as expected"
+
+        embed = discord.Embed(title=f"{player['name']} — Actual vs Expected", color=discord.Color.gold())
+        embed.add_field(name="Actual wOBA", value=str(gap_result["actual_woba"]), inline=True)
+        embed.add_field(name="Expected wOBA (xwOBA)", value=str(gap_result["expected_woba"]), inline=True)
+        embed.add_field(name="Gap", value=f"{gap:+.3f}", inline=True)
+        embed.add_field(name="Read", value=verdict, inline=False)
+        embed.set_footer(text=f"{start_date} to {end_date} • {gap_result['sample_size']} events • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _velo_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
+        await interaction.response.defer()
+        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
+        if result is None:
+            return
+        player, rows = result
+
+        trend = analysis.velocity_trend(rows)
+        if not trend:
+            await interaction.followup.send(f"{player['name']}: not enough pitches in that range for a trend (need 10+ per pitch type).")
+            return
+
+        embed = discord.Embed(title=f"{player['name']} — Velocity Trend", color=discord.Color.red())
+        for pitch_type, data in sorted(trend.items(), key=lambda x: -x[1]["count"]):
+            arrow = "📉" if data["change"] < -0.5 else ("📈" if data["change"] > 0.5 else "➡️")
+            embed.add_field(
+                name=f"{pitch_type} ({data['count']} pitches)",
+                value=f"{data['first_half_avg']} → {data['second_half_avg']} mph {arrow} ({data['change']:+.1f})",
+                inline=False,
+            )
+        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _livevelo_callback(self, interaction: discord.Interaction, player_name: str):
+        await interaction.response.defer()
+        try:
+            player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
+        except Exception as e:
+            await interaction.followup.send(f"Player lookup failed: {e}")
+            return
+        if player is None:
+            await interaction.followup.send(f"No player found matching '{player_name}'.")
+            return
+        if not player["is_pitcher"]:
+            await interaction.followup.send(f"{player['name']} isn't a pitcher -- live velocity tracking is pitcher-only.")
+            return
+
+        today = et_date_str(0)
+
+        try:
+            game_pk = await asyncio.to_thread(statcast_api.find_todays_game_for_pitcher, player["id"], today)
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't check today's schedule: {e}")
+            return
+
+        if game_pk is None:
+            await interaction.followup.send(f"{player['name']} doesn't appear to be starting today.")
+            return
+
+        try:
+            live = await asyncio.to_thread(statcast_api.get_live_pitch_metrics, game_pk, player["id"])
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't pull live pitch data: {e}")
+            return
+
+        if not live:
+            await interaction.followup.send(
+                f"No pitches recorded yet for {player['name']} in today's game -- game may not have started, "
+                f"or he hasn't taken the mound yet."
+            )
+            return
+
+        baseline_start = et_date_str(-30)
+        baseline_end = et_date_str(-1)
+        try:
+            baseline_rows = await asyncio.to_thread(
+                statcast_api.fetch_statcast, player["id"], True, baseline_start, baseline_end
+            )
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't fetch baseline: {e}")
+            return
+
+        if not baseline_rows:
+            await interaction.followup.send(f"No recent baseline data found for {player['name']} in the last 30 days.")
+            return
+
+        baseline = analysis.avg_metrics_by_pitch_type(baseline_rows)
+        drops = analysis.detect_velocity_drops(baseline, live)
+
+        embed = discord.Embed(
+            title=f"{player['name']} — Live Pitch Check",
+            color=discord.Color.orange() if drops else discord.Color.green(),
+        )
+        for pt, live_metrics in live.items():
+            baseline_metrics = baseline.get(pt)
+            lines = []
+            if baseline_metrics and "speed" in baseline_metrics:
+                diff = live_metrics["speed"] - baseline_metrics["speed"]
+                flag = " ⚠️" if diff <= -analysis.DROP_THRESHOLD_MPH else ""
+                lines.append(f"Velo: {baseline_metrics['speed']} → {live_metrics['speed']} mph ({diff:+.1f}){flag}")
+            else:
+                lines.append(f"Velo: {live_metrics['speed']} mph (no baseline)")
+
+            if "spin" in live_metrics and baseline_metrics and "spin" in baseline_metrics:
+                spin_diff_pct = (live_metrics["spin"] - baseline_metrics["spin"]) / baseline_metrics["spin"] * 100
+                flag = " ⚠️" if spin_diff_pct <= -analysis.DROP_THRESHOLD_SPIN_PCT * 100 else ""
+                lines.append(f"Spin: {baseline_metrics['spin']} → {live_metrics['spin']} rpm ({spin_diff_pct:+.1f}%){flag}")
+
+            if "break_vert" in live_metrics and baseline_metrics and "break_vert" in baseline_metrics:
+                lines.append(
+                    f"Movement (unverified units*): V {baseline_metrics['break_vert']}→{live_metrics['break_vert']}, "
+                    f"H {baseline_metrics.get('break_horz', '-')}→{live_metrics.get('break_horz', '-')}"
+                )
+
+            embed.add_field(name=pt, value="\n".join(lines), inline=False)
+
+        if drops:
+            embed.description = f"⚠️ **{len(drops)} metric(s) showing a real drop from baseline**"
+        else:
+            embed.description = "✅ No significant drop detected"
+
+        embed.set_footer(text="*Movement shown for reference only -- units not cross-verified between live feed and baseline yet. Live: MLB official feed • Baseline: last 30 days, Baseball Savant")
+        await interaction.followup.send(embed=embed)
+
+    async def _setchannel_callback(self, interaction: discord.Interaction):
+        storage.set_config("announce_channel_id", str(interaction.channel_id))
+        await interaction.response.send_message("✅ Channel saved (reserved for future automatic posts).")
+
+    async def _checkleaderboard_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        import csv
+        import io
+
+        try:
+            text = await asyncio.to_thread(statcast_api.fetch_percentile_leaderboard, "batter", 2026)
+        except Exception as e:
+            await interaction.followup.send(f"Request failed: {type(e).__name__}: {e}"[:2000])
+            return
+
+        if text.startswith("\ufeff"):
+            text = text[1:]
+
+        try:
+            reader = csv.DictReader(io.StringIO(text))
+            rows = list(reader)
+        except Exception as e:
+            await interaction.followup.send(f"Couldn't parse as CSV: {e}\nRaw preview:\n```{text[:1000]}```"[:2000])
+            return
+
+        if not rows:
+            await interaction.followup.send(f"Valid CSV format but 0 rows.\nRaw preview:\n```{text[:1200]}```"[:2000])
+            return
+
+        columns = list(rows[0].keys())
+        msg = (
+            f"**Percentile leaderboard test — SUCCESS**\n\n"
+            f"Rows: {len(rows)}\n"
+            f"Columns: {len(columns)}\n\n"
+            f"First 15 columns: {columns[:15]}\n\n"
+            f"Sample first row (first 10 fields): {dict(list(rows[0].items())[:10])}"
+        )
+        await interaction.followup.send(msg[:2000])
+
+    async def on_ready(self):
+        log.info("Logged in as %s", self.user)
+
+
+client = StatcastBot()
+
+if __name__ == "__main__":
+    if not TOKEN:
+        raise SystemExit("Set DISCORD_TOKEN in your .env file.")
+    client.run(TOKEN)
