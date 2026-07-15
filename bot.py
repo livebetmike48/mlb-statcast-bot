@@ -97,26 +97,13 @@ class StatcastBot(discord.Client):
     async def setup_hook(self):
         storage.init_db()
 
-        barrels_cmd = app_commands.Command(
-            name="barrels",
-            description="Quality of contact: exit velo, launch angle, hard-hit rate",
-            callback=self._barrels_callback,
-        )
-        self.tree.add_command(barrels_cmd)
-
-        luck_cmd = app_commands.Command(
-            name="luck",
-            description="Actual vs expected wOBA -- is this hitter over/underperforming?",
-            callback=self._luck_callback,
-        )
-        self.tree.add_command(luck_cmd)
-
         velo_cmd = app_commands.Command(
             name="velo",
             description="Pitcher velocity trend by pitch type over a date range",
             callback=self._velo_callback,
         )
         self.tree.add_command(velo_cmd)
+        velo_cmd.autocomplete("player_name")(self._pitcher_name_autocomplete)
 
         livevelo_cmd = app_commands.Command(
             name="livevelo",
@@ -124,6 +111,7 @@ class StatcastBot(discord.Client):
             callback=self._livevelo_callback,
         )
         self.tree.add_command(livevelo_cmd)
+        livevelo_cmd.autocomplete("player_name")(self._pitcher_name_autocomplete)
 
         pitchmix_cmd = app_commands.Command(
             name="pitchmix",
@@ -131,13 +119,7 @@ class StatcastBot(discord.Client):
             callback=self._pitchmix_callback,
         )
         self.tree.add_command(pitchmix_cmd)
-
-        vspitch_cmd = app_commands.Command(
-            name="vspitch",
-            description="How a batter performs against one specific pitch type (e.g. sliders)",
-            callback=self._vspitch_callback,
-        )
-        self.tree.add_command(vspitch_cmd)
+        pitchmix_cmd.autocomplete("player_name")(self._pitcher_name_autocomplete)
 
         vseachpitch_cmd = app_commands.Command(
             name="vseachpitch",
@@ -145,6 +127,7 @@ class StatcastBot(discord.Client):
             callback=self._vseachpitch_callback,
         )
         self.tree.add_command(vseachpitch_cmd)
+        vseachpitch_cmd.autocomplete("player_name")(self._any_player_autocomplete)
 
         matchup_cmd = app_commands.Command(
             name="matchup",
@@ -152,6 +135,8 @@ class StatcastBot(discord.Client):
             callback=self._matchup_callback,
         )
         self.tree.add_command(matchup_cmd)
+        matchup_cmd.autocomplete("batter_name")(self._batter_name_autocomplete)
+        matchup_cmd.autocomplete("pitcher_name")(self._pitcher_name_autocomplete)
 
         vshand_cmd = app_commands.Command(
             name="vshand",
@@ -159,20 +144,7 @@ class StatcastBot(discord.Client):
             callback=self._vshand_callback,
         )
         self.tree.add_command(vshand_cmd)
-
-        checkwhiff_cmd = app_commands.Command(
-            name="checkwhiff",
-            description="Debug: show every pitch description count + whiff% under candidate definitions",
-            callback=self._checkwhiff_callback,
-        )
-        self.tree.add_command(checkwhiff_cmd)
-
-        checkscope_cmd = app_commands.Command(
-            name="checkscope",
-            description="Debug: verify a fetch is correctly scoped to one player, not their whole team",
-            callback=self._checkscope_callback,
-        )
-        self.tree.add_command(checkscope_cmd)
+        vshand_cmd.autocomplete("player_name")(self._any_player_autocomplete)
 
         setchannel_cmd = app_commands.Command(
             name="setchannel",
@@ -180,13 +152,6 @@ class StatcastBot(discord.Client):
             callback=self._setchannel_callback,
         )
         self.tree.add_command(setchannel_cmd)
-
-        checkleaderboard_cmd = app_commands.Command(
-            name="checkleaderboard",
-            description="Debug: test Savant's percentile-rankings leaderboard CSV export",
-            callback=self._checkleaderboard_callback,
-        )
-        self.tree.add_command(checkleaderboard_cmd)
 
         leaders_cmd = app_commands.Command(
             name="leaders",
@@ -224,54 +189,6 @@ class StatcastBot(discord.Client):
                 log.info("Synced %d slash commands globally", len(synced))
         except Exception as e:
             log.error("Slash command sync failed: %s", e)
-
-    async def _barrels_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
-        await interaction.response.defer()
-        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
-        if result is None:
-            return
-        player, rows = result
-
-        qoc = analysis.quality_of_contact(rows)
-        if qoc["batted_balls"] == 0:
-            await interaction.followup.send(f"{player['name']}: no batted-ball events found in that range.")
-            return
-
-        embed = discord.Embed(title=f"{player['name']} — Quality of Contact", color=discord.Color.blue())
-        embed.add_field(name="Batted Balls", value=str(qoc["batted_balls"]), inline=True)
-        embed.add_field(name="Avg Exit Velo", value=f"{qoc['avg_exit_velo']} mph", inline=True)
-        embed.add_field(name="Avg Launch Angle", value=f"{qoc['avg_launch_angle']}°", inline=True)
-        embed.add_field(name="Hard-Hit Rate (95+ mph)", value=f"{qoc['hard_hit_rate']}%", inline=True)
-        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
-        await interaction.followup.send(embed=embed)
-
-    async def _luck_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
-        await interaction.response.defer()
-        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
-        if result is None:
-            return
-        player, rows = result
-
-        gap_result = analysis.expected_vs_actual(rows)
-        if gap_result["gap"] is None:
-            await interaction.followup.send(f"{player['name']}: not enough data to compute actual vs expected wOBA.")
-            return
-
-        gap = gap_result["gap"]
-        if gap > 0.02:
-            verdict = "🍀 Overperforming (getting a bit lucky)"
-        elif gap < -0.02:
-            verdict = "😤 Underperforming (due for positive regression)"
-        else:
-            verdict = "✅ Performing about as expected"
-
-        embed = discord.Embed(title=f"{player['name']} — Actual vs Expected", color=discord.Color.gold())
-        embed.add_field(name="Actual wOBA", value=str(gap_result["actual_woba"]), inline=True)
-        embed.add_field(name="Expected wOBA (xwOBA)", value=str(gap_result["expected_woba"]), inline=True)
-        embed.add_field(name="Gap", value=f"{gap:+.3f}", inline=True)
-        embed.add_field(name="Read", value=verdict, inline=False)
-        embed.set_footer(text=f"{start_date} to {end_date} • {gap_result['sample_size']} events • Data: Baseball Savant")
-        await interaction.followup.send(embed=embed)
 
     async def _velo_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str):
         await interaction.response.defer()
@@ -407,6 +324,38 @@ class StatcastBot(discord.Client):
                 break
 
         return [app_commands.Choice(name=name, value=name) for name in matches]
+
+    async def _players_matching(self, player_type: str, current: str) -> list[str]:
+        """Shared core: qualified player names from the cached leaderboard,
+        converted from the CSV's 'Last, First' to natural 'First Last'."""
+        try:
+            rows = await self._get_cached_leaderboard(player_type)
+        except Exception:
+            return []
+        current_lower = current.lower()
+        matches = []
+        for r in rows:
+            csv_name = r.get("player_name", "")
+            if current_lower in csv_name.lower():
+                parts = [p.strip() for p in csv_name.split(",")]
+                matches.append(f"{parts[1]} {parts[0]}" if len(parts) == 2 else csv_name)
+            if len(matches) >= 25:
+                break
+        return matches
+
+    async def _batter_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        names = await self._players_matching("batter", current)
+        return [app_commands.Choice(name=n, value=n) for n in names]
+
+    async def _pitcher_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        names = await self._players_matching("pitcher", current)
+        return [app_commands.Choice(name=n, value=n) for n in names]
+
+    async def _any_player_autocomplete(self, interaction: discord.Interaction, current: str):
+        batters = await self._players_matching("batter", current)
+        pitchers = await self._players_matching("pitcher", current)
+        merged = list(dict.fromkeys(batters + pitchers))[:25]
+        return [app_commands.Choice(name=n, value=n) for n in merged]
 
     async def _stat_autocomplete(self, interaction: discord.Interaction, current: str):
         current_lower = current.lower()
@@ -546,47 +495,6 @@ class StatcastBot(discord.Client):
         embed.set_footer(text=f"{date_label} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
-    async def _vspitch_callback(self, interaction: discord.Interaction, player_name: str,
-                                 pitch_type: Literal["FF", "SI", "SL", "CH", "CU", "FC", "ST", "FS", "KC", "SV"],
-                                 hand: Literal["L", "R", "all"] = "all",
-                                 start_date: str = None, end_date: str = None):
-        await interaction.response.defer()
-        if not start_date:
-            start_date = f"{et_date_str(0)[:4]}-01-01"
-        if not end_date:
-            end_date = et_date_str(0)
-        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
-        if result is None:
-            return
-        player, rows = result
-
-        hand_field = "stand" if player["is_pitcher"] else "p_throws"
-        if hand in ("L", "R"):
-            rows = [r for r in rows if r.get(hand_field) == hand]
-
-        pt = pitch_type.upper()
-        vs_result = statcast_api.vs_pitch_type_stats(rows, pt)
-        if vs_result is None:
-            await interaction.followup.send(f"{player['name']}: no pitches of type '{pt}' found in that range (hand={hand}).")
-            return
-
-        hand_label = f" (vs {hand}HP)" if hand in ("L", "R") and not player["is_pitcher"] else (f" (vs {hand}HB)" if hand in ("L", "R") else "")
-        embed = discord.Embed(title=f"{player['name']} vs {pt}{hand_label}", color=discord.Color.green())
-        embed.add_field(name="Pitches seen", value=str(vs_result["pitches_seen"]), inline=True)
-        embed.add_field(name="PA ending on this pitch", value=str(vs_result["pa_ending_on_this_pitch"]), inline=True)
-        if "avg" in vs_result:
-            embed.add_field(name="AVG", value=str(vs_result["avg"]), inline=True)
-        if "xba" in vs_result:
-            embed.add_field(name="xBA", value=str(vs_result["xba"]), inline=True)
-        if "xwoba" in vs_result:
-            embed.add_field(name="xwOBA", value=str(vs_result["xwoba"]), inline=True)
-        if "whiff_pct" in vs_result:
-            embed.add_field(name="Whiff %", value=f"{vs_result['whiff_pct']}%", inline=True)
-        if "k_pct" in vs_result:
-            embed.add_field(name="K %", value=f"{vs_result['k_pct']}%", inline=True)
-        embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
-        await interaction.followup.send(embed=embed)
-
     async def _vseachpitch_callback(self, interaction: discord.Interaction, player_name: str,
                                      hand: Literal["L", "R", "all"] = "all",
                                      start_date: str = None, end_date: str = None):
@@ -678,6 +586,8 @@ class StatcastBot(discord.Client):
 
         mix = statcast_api.pitch_mix_breakdown(pitcher_vs_side)
         batter_table = statcast_api.vs_each_pitch(batter_vs_hand, min_pitches=1)
+        batter_overall = statcast_api.vs_handedness_stats(batter_rows, "p_throws", pitcher_hand)
+        pitcher_overall = statcast_api.vs_handedness_stats(pitcher_rows, "stand", batter_side)
 
         if not mix or not batter_table:
             await interaction.followup.send(
@@ -692,40 +602,18 @@ class StatcastBot(discord.Client):
             color=discord.Color.gold(),
         )
 
-        # Full L/R split tables with deltas (StraightBettin MATCHUP-tab style).
-        # The delta is just the real difference between the two splits --
-        # arrow points to whichever side the number is higher on.
-        batter_vs_l = statcast_api.vs_handedness_stats(batter_rows, "p_throws", "L")
-        batter_vs_r = statcast_api.vs_handedness_stats(batter_rows, "p_throws", "R")
-        pitcher_vs_l = statcast_api.vs_handedness_stats(pitcher_rows, "stand", "L")
-        pitcher_vs_r = statcast_api.vs_handedness_stats(pitcher_rows, "stand", "R")
-
-        def _split_table(vs_l, vs_r):
-            metrics = [("PA", "pa", False), ("xBA", "xba", False), ("xwOBA", "xwoba", False),
-                       ("K%", "k_pct", True), ("BB%", "bb_pct", True), ("Whiff%", "whiff_pct", True)]
-            lines = []
-            for label, key, pct in metrics:
-                l_val = vs_l.get(key) if vs_l else None
-                r_val = vs_r.get(key) if vs_r else None
-                fmt = lambda v: ("-" if v is None else (f"{v}%" if pct else f"{v}"))
-                delta = ""
-                if isinstance(l_val, (int, float)) and isinstance(r_val, (int, float)) and key != "pa" and l_val != r_val:
-                    diff = round(abs(l_val - r_val), 1 if pct else 3)
-                    arrow = "↑L" if l_val > r_val else "↑R"
-                    delta = f"  ({arrow} {diff})"
-                lines.append(f"{label}: {fmt(l_val)} L | {fmt(r_val)} R{delta}")
-            return "\n".join(lines)
-
-        embed.add_field(
-            name=f"{batter['name']} — splits (facing {pitcher_hand}HP today)",
-            value=_split_table(batter_vs_l, batter_vs_r),
-            inline=False,
-        )
-        embed.add_field(
-            name=f"{pitcher['name']} — splits (facing {batter_side}HB today)",
-            value=_split_table(pitcher_vs_l, pitcher_vs_r),
-            inline=False,
-        )
+        if batter_overall:
+            embed.add_field(
+                name=f"{batter['name']} overall vs {pitcher_hand}HP",
+                value=f"PA: {batter_overall['pa']} • xBA: {batter_overall.get('xba', '-')} • xwOBA: {batter_overall.get('xwoba', '-')} • Whiff: {batter_overall.get('whiff_pct', '-')}% • K: {batter_overall.get('k_pct', '-')}% • BB: {batter_overall.get('bb_pct', '-')}%",
+                inline=False,
+            )
+        if pitcher_overall:
+            embed.add_field(
+                name=f"{pitcher['name']} overall vs {batter_side}HB",
+                value=f"PA: {pitcher_overall['pa']} • xBA: {pitcher_overall.get('xba', '-')} • xwOBA: {pitcher_overall.get('xwoba', '-')} • Whiff: {pitcher_overall.get('whiff_pct', '-')}% • K: {pitcher_overall.get('k_pct', '-')}%",
+                inline=False,
+            )
 
         # The merged view: each pitch he throws to this side, with the batter's numbers against it
         for pt, m in mix.items():
@@ -790,133 +678,9 @@ class StatcastBot(discord.Client):
         embed.set_footer(text=f"{start_date} to {end_date} • Data: Baseball Savant")
         await interaction.followup.send(embed=embed)
 
-    async def _checkwhiff_callback(self, interaction: discord.Interaction, player_name: str,
-                                    hand: Literal["L", "R", "all"] = "all",
-                                    start_date: str = None, end_date: str = None):
-        await interaction.response.defer()
-        if not start_date:
-            start_date = f"{et_date_str(0)[:4]}-01-01"
-        if not end_date:
-            end_date = et_date_str(0)
-
-        result = await _resolve_and_fetch(interaction, player_name, start_date, end_date)
-        if result is None:
-            return
-        player, rows = result
-
-        hand_field = "stand" if player["is_pitcher"] else "p_throws"
-        if hand in ("L", "R"):
-            rows = [r for r in rows if r.get(hand_field) == hand]
-
-        # Count every distinct description value
-        desc_counts = {}
-        for r in rows:
-            d = r.get("description") or "(empty)"
-            desc_counts[d] = desc_counts.get(d, 0) + 1
-        desc_sorted = sorted(desc_counts.items(), key=lambda x: -x[1])
-
-        # Candidate swing/whiff definitions to test against the known real number
-        base_swings = {"swinging_strike", "swinging_strike_blocked", "foul", "foul_tip", "hit_into_play"}
-        base_whiffs = {"swinging_strike", "swinging_strike_blocked"}
-
-        candidates = {
-            "current (ours)": (base_swings, base_whiffs),
-            "+foul_tip as whiff": (base_swings, base_whiffs | {"foul_tip"}),
-            "+bunt fouls/misses as swings": (base_swings | {"foul_bunt", "missed_bunt", "bunt_foul_tip"}, base_whiffs | {"missed_bunt"}),
-            "-foul_tip from swings": (base_swings - {"foul_tip"}, base_whiffs),
-        }
-
-        lines = [f"**Whiff diagnostic: {player['name']}, hand={hand}, {start_date} to {end_date}**\n"]
-        lines.append("Description counts: " + ", ".join(f"{d}: {c}" for d, c in desc_sorted))
-        lines.append("")
-        for label, (swing_set, whiff_set) in candidates.items():
-            swings = sum(1 for r in rows if r.get("description") in swing_set)
-            whiffs = sum(1 for r in rows if r.get("description") in whiff_set)
-            pct = round(whiffs / swings * 100, 1) if swings else 0
-            lines.append(f"{label}: {whiffs}/{swings} = {pct}%")
-
-        await interaction.followup.send("\n".join(lines)[:2000])
-
-    async def _checkscope_callback(self, interaction: discord.Interaction, player_name: str, start_date: str, end_date: str = None):
-        await interaction.response.defer()
-        if not end_date:
-            end_date = start_date
-
-        try:
-            player = await asyncio.to_thread(statcast_api.resolve_player, player_name)
-        except Exception as e:
-            await interaction.followup.send(f"Lookup failed: {e}")
-            return
-        if player is None:
-            await interaction.followup.send(f"No player found for '{player_name}'.")
-            return
-
-        try:
-            rows = await asyncio.to_thread(
-                statcast_api.fetch_statcast, player["id"], player["is_pitcher"], start_date, end_date
-            )
-        except Exception as e:
-            await interaction.followup.send(f"Fetch failed: {e}")
-            return
-
-        unique_batters = set(r.get("batter") for r in rows)
-        unique_dates = set(r.get("game_date") for r in rows)
-        date_counts = {}
-        for r in rows:
-            d = r.get("game_date")
-            date_counts[d] = date_counts.get(d, 0) + 1
-        max_date, max_count = max(date_counts.items(), key=lambda x: x[1]) if date_counts else (None, 0)
-
-        msg = (
-            f"**Scope check: {player['name']} (ID {player['id']}), {start_date} to {end_date}**\n\n"
-            f"Total rows returned: {len(rows)}\n"
-            f"Unique batter IDs: {len(unique_batters)}\n"
-            f"Unique game dates covered: {len(unique_dates)}\n"
-            f"Highest single-day count: {max_count} rows on {max_date}\n"
-            f"(A single real game should be roughly 15-25 rows for a batter -- "
-            f"if any single date shows way more than that, duplicates are being returned for that day.)"
-        )
-        await interaction.followup.send(msg[:2000])
-
     async def _setchannel_callback(self, interaction: discord.Interaction):
         storage.set_config("announce_channel_id", str(interaction.channel_id))
         await interaction.response.send_message("✅ Channel saved (reserved for future automatic posts).")
-
-    async def _checkleaderboard_callback(self, interaction: discord.Interaction, player_type: str = "batter"):
-        await interaction.response.defer()
-        import csv
-        import io
-
-        try:
-            text = await asyncio.to_thread(statcast_api.fetch_percentile_leaderboard, player_type, 2026)
-        except Exception as e:
-            await interaction.followup.send(f"Request failed: {type(e).__name__}: {e}"[:2000])
-            return
-
-        if text.startswith("\ufeff"):
-            text = text[1:]
-
-        try:
-            reader = csv.DictReader(io.StringIO(text))
-            rows = list(reader)
-        except Exception as e:
-            await interaction.followup.send(f"Couldn't parse as CSV: {e}\nRaw preview:\n```{text[:1000]}```"[:2000])
-            return
-
-        if not rows:
-            await interaction.followup.send(f"Valid CSV format but 0 rows.\nRaw preview:\n```{text[:1200]}```"[:2000])
-            return
-
-        columns = list(rows[0].keys())
-        msg = (
-            f"**Percentile leaderboard test — SUCCESS**\n\n"
-            f"Rows: {len(rows)}\n"
-            f"Columns: {len(columns)}\n\n"
-            f"ALL columns: {columns}\n\n"
-            f"Sample full row (Soto if found, else first row): "
-            f"{next((dict(r) for r in rows if 'Soto' in r.get('player_name', '')), dict(rows[0]))}"
-        )
-        await interaction.followup.send(msg[:2000])
 
     async def on_ready(self):
         log.info("Logged in as %s", self.user)
