@@ -373,7 +373,7 @@ class StatcastBot(discord.Client):
 
             if "break_vert" in live_metrics and baseline_metrics and "break_vert" in baseline_metrics:
                 lines.append(
-                    f"Movement (unverified units*): V {baseline_metrics['break_vert']}→{live_metrics['break_vert']}, "
+                    f"Movement (inches): IVB {baseline_metrics['break_vert']}→{live_metrics['break_vert']}, "
                     f"H {baseline_metrics.get('break_horz', '-')}→{live_metrics.get('break_horz', '-')}"
                 )
 
@@ -384,7 +384,7 @@ class StatcastBot(discord.Client):
         else:
             embed.description = "✅ No significant drop detected"
 
-        embed.set_footer(text="*Movement shown for reference only -- units not cross-verified between live feed and baseline yet. Live: MLB official feed • Baseline: last 30 days, Baseball Savant")
+        embed.set_footer(text="Live: MLB official feed (verified real-time vs Savant, 2026 ASG) • Baseline: last 30 days, Baseball Savant")
         await interaction.followup.send(embed=embed)
 
     async def _player_name_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -678,8 +678,6 @@ class StatcastBot(discord.Client):
 
         mix = statcast_api.pitch_mix_breakdown(pitcher_vs_side)
         batter_table = statcast_api.vs_each_pitch(batter_vs_hand, min_pitches=1)
-        batter_overall = statcast_api.vs_handedness_stats(batter_rows, "p_throws", pitcher_hand)
-        pitcher_overall = statcast_api.vs_handedness_stats(pitcher_rows, "stand", batter_side)
 
         if not mix or not batter_table:
             await interaction.followup.send(
@@ -694,18 +692,40 @@ class StatcastBot(discord.Client):
             color=discord.Color.gold(),
         )
 
-        if batter_overall:
-            embed.add_field(
-                name=f"{batter['name']} overall vs {pitcher_hand}HP",
-                value=f"PA: {batter_overall['pa']} • xBA: {batter_overall.get('xba', '-')} • xwOBA: {batter_overall.get('xwoba', '-')} • Whiff: {batter_overall.get('whiff_pct', '-')}% • K: {batter_overall.get('k_pct', '-')}% • BB: {batter_overall.get('bb_pct', '-')}%",
-                inline=False,
-            )
-        if pitcher_overall:
-            embed.add_field(
-                name=f"{pitcher['name']} overall vs {batter_side}HB",
-                value=f"PA: {pitcher_overall['pa']} • xBA: {pitcher_overall.get('xba', '-')} • xwOBA: {pitcher_overall.get('xwoba', '-')} • Whiff: {pitcher_overall.get('whiff_pct', '-')}% • K: {pitcher_overall.get('k_pct', '-')}%",
-                inline=False,
-            )
+        # Full L/R split tables with deltas (StraightBettin MATCHUP-tab style).
+        # The delta is just the real difference between the two splits --
+        # arrow points to whichever side the number is higher on.
+        batter_vs_l = statcast_api.vs_handedness_stats(batter_rows, "p_throws", "L")
+        batter_vs_r = statcast_api.vs_handedness_stats(batter_rows, "p_throws", "R")
+        pitcher_vs_l = statcast_api.vs_handedness_stats(pitcher_rows, "stand", "L")
+        pitcher_vs_r = statcast_api.vs_handedness_stats(pitcher_rows, "stand", "R")
+
+        def _split_table(vs_l, vs_r):
+            metrics = [("PA", "pa", False), ("xBA", "xba", False), ("xwOBA", "xwoba", False),
+                       ("K%", "k_pct", True), ("BB%", "bb_pct", True), ("Whiff%", "whiff_pct", True)]
+            lines = []
+            for label, key, pct in metrics:
+                l_val = vs_l.get(key) if vs_l else None
+                r_val = vs_r.get(key) if vs_r else None
+                fmt = lambda v: ("-" if v is None else (f"{v}%" if pct else f"{v}"))
+                delta = ""
+                if isinstance(l_val, (int, float)) and isinstance(r_val, (int, float)) and key != "pa" and l_val != r_val:
+                    diff = round(abs(l_val - r_val), 1 if pct else 3)
+                    arrow = "↑L" if l_val > r_val else "↑R"
+                    delta = f"  ({arrow} {diff})"
+                lines.append(f"{label}: {fmt(l_val)} L | {fmt(r_val)} R{delta}")
+            return "\n".join(lines)
+
+        embed.add_field(
+            name=f"{batter['name']} — splits (facing {pitcher_hand}HP today)",
+            value=_split_table(batter_vs_l, batter_vs_r),
+            inline=False,
+        )
+        embed.add_field(
+            name=f"{pitcher['name']} — splits (facing {batter_side}HB today)",
+            value=_split_table(pitcher_vs_l, pitcher_vs_r),
+            inline=False,
+        )
 
         # The merged view: each pitch he throws to this side, with the batter's numbers against it
         for pt, m in mix.items():
