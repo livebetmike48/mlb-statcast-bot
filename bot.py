@@ -6,6 +6,7 @@ from typing import Literal
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 import statcast_api
@@ -148,7 +149,7 @@ class StatcastBot(discord.Client):
 
         setchannel_cmd = app_commands.Command(
             name="setchannel",
-            description="Set this channel (reserved for future automatic posts)",
+            description="Set this channel for automatic velocity/spin drop alerts",
             callback=self._setchannel_callback,
         )
         self.tree.add_command(setchannel_cmd)
@@ -680,13 +681,128 @@ class StatcastBot(discord.Client):
 
     async def _setchannel_callback(self, interaction: discord.Interaction):
         storage.set_config("announce_channel_id", str(interaction.channel_id))
-        await interaction.response.send_message("✅ Channel saved (reserved for future automatic posts).")
+        await interaction.response.send_message(
+            "✅ Channel saved -- automatic velocity/spin drop alerts will post here."
+        )
 
     async def on_ready(self):
         log.info("Logged in as %s", self.user)
+        if not poll_velocity_drops.is_running():
+            poll_velocity_drops.start(self)
 
 
 client = StatcastBot()
+
+VELOCITY_POLL_SECONDS = int(os.getenv("VELOCITY_POLL_SECONDS", "120"))
+# Cache each pitcher's 30-day baseline for this long so every poll cycle
+# doesn't refetch it -- baseline barely moves start-to-start, and this is
+# the same Savant CSV endpoint the manual /livevelo command hits.
+BASELINE_CACHE_HOURS = float(os.getenv("BASELINE_CACHE_HOURS", "6"))
+_baseline_cache: dict[int, dict] = {}  # pitcher_id -> {"data": ..., "fetched_at": ...}
+
+
+async def _get_cached_baseline(pitcher_id: int):
+    now = datetime.now(timezone.utc)
+    cached = _baseline_cache.get(pitcher_id)
+    if cached and (now - cached["fetched_at"]).total_seconds() < BASELINE_CACHE_HOURS * 3600:
+        return cached["data"]
+
+    baseline_start = et_date_str(-30)
+    baseline_end = et_date_str(-1)
+    rows = await asyncio.to_thread(statcast_api.fetch_statcast, pitcher_id, True, baseline_start, baseline_end)
+    baseline = analysis.avg_metrics_by_pitch_type(rows) if rows else {}
+    _baseline_cache[pitcher_id] = {"data": baseline, "fetched_at": now}
+    return baseline
+
+
+def build_autopost_embed(pitcher_name: str, team: str, drops: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"⚠️ {pitcher_name} ({team}) — Velocity/Spin Drop Detected",
+        color=discord.Color.orange(),
+    )
+    for d in drops:
+        if d["metric"] == "velocity":
+            embed.add_field(
+                name=d["pitch_type"],
+                value=f"Velo: {d['baseline']} → {d['live']} mph ({d['diff']:+.1f})",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name=d["pitch_type"],
+                value=f"Spin: {d['baseline']} → {d['live']} rpm ({d['diff']:+.1f}%)",
+                inline=False,
+            )
+    embed.set_footer(text="Live: MLB official feed • Baseline: last 30 days, Baseball Savant")
+    return embed
+
+
+@tasks.loop(seconds=VELOCITY_POLL_SECONDS)
+async def poll_velocity_drops(bot: StatcastBot):
+    try:
+        await _poll_velocity_drops_body(bot)
+    except Exception as e:
+        log.error("poll_velocity_drops cycle failed unexpectedly, will retry next cycle: %s", e)
+
+
+async def _poll_velocity_drops_body(bot: StatcastBot):
+    channel_id = storage.get_config("announce_channel_id")
+    if not channel_id:
+        return
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        return
+
+    today = et_date_str(0)
+    try:
+        pitchers = await asyncio.to_thread(statcast_api.get_todays_probable_pitchers, today)
+    except Exception as e:
+        log.error("Failed to fetch today's probable pitchers: %s", e)
+        return
+
+    for p in pitchers:
+        try:
+            live = await asyncio.to_thread(statcast_api.get_live_pitch_metrics, p["game_pk"], p["id"])
+        except Exception as e:
+            log.error("Live pitch fetch failed for %s (game %s): %s", p["name"], p["game_pk"], e)
+            continue
+        if not live:
+            continue  # hasn't thrown yet, or between innings with nothing new
+
+        try:
+            baseline = await _get_cached_baseline(p["id"])
+        except Exception as e:
+            log.error("Baseline fetch failed for %s: %s", p["name"], e)
+            continue
+        if not baseline:
+            continue  # no recent-starts data to compare against (e.g. rookie call-up)
+
+        drops = analysis.detect_velocity_drops(baseline, live)
+        if not drops:
+            continue
+
+        # Post only NEW drops -- dedupe per (game, pitcher, pitch_type, metric)
+        # so this alerts once per specific drop, not every poll cycle.
+        new_drops = [
+            d for d in drops
+            if not storage.drop_already_alerted(p["game_pk"], p["id"], d["pitch_type"], d["metric"])
+        ]
+        if not new_drops:
+            continue
+
+        try:
+            await channel.send(embed=build_autopost_embed(p["name"], p["team"], new_drops))
+            for d in new_drops:
+                storage.mark_drop_alerted(p["game_pk"], p["id"], d["pitch_type"], d["metric"])
+            log.info("Auto-posted %d drop(s) for %s (game %s)", len(new_drops), p["name"], p["game_pk"])
+        except Exception as e:
+            log.error("Failed to send auto-post alert for %s: %s", p["name"], e)
+
+
+@poll_velocity_drops.before_loop
+async def before_poll_velocity_drops():
+    await client.wait_until_ready()
+
 
 if __name__ == "__main__":
     if not TOKEN:
