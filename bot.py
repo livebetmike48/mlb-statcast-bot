@@ -295,7 +295,10 @@ class StatcastBot(discord.Client):
                     f"H {baseline_metrics.get('break_horz', '-')}→{live_metrics.get('break_horz', '-')}"
                 )
 
-            embed.add_field(name=pt, value="\n".join(lines), inline=False)
+            embed.add_field(
+                name=f"{pt} ({live_metrics.get('count', '?')} pitches)",
+                value="\n".join(lines), inline=False,
+            )
 
         if drops:
             embed.description = f"⚠️ **{len(drops)} metric(s) showing a real drop from baseline**"
@@ -694,6 +697,13 @@ class StatcastBot(discord.Client):
 client = StatcastBot()
 
 VELOCITY_POLL_SECONDS = int(os.getenv("VELOCITY_POLL_SECONDS", "120"))
+# Minimum sample before ANY auto-alert fires for a pitcher: a "drop"
+# computed off his first few pitches is warmup noise, not signal.
+MIN_TOTAL_PITCHES = int(os.getenv("MIN_TOTAL_PITCHES", "10"))
+# A specific pitch type only counts toward a drop alert once he's thrown
+# it at least this many times -- one first-inning changeup can't trigger
+# its own alert.
+MIN_PITCHES_PER_TYPE = int(os.getenv("MIN_PITCHES_PER_TYPE", "3"))
 # Cache each pitcher's 30-day baseline for this long so every poll cycle
 # doesn't refetch it -- baseline barely moves start-to-start, and this is
 # the same Savant CSV endpoint the manual /livevelo command hits.
@@ -768,6 +778,17 @@ async def _poll_velocity_drops_body(bot: StatcastBot):
             continue
         if not live:
             continue  # hasn't thrown yet, or between innings with nothing new
+
+        # Sample-size gates (July 19 fix -- alerts were firing off a
+        # pitcher's first few pitches, which is warmup noise):
+        # 1) total pitches in the game must reach MIN_TOTAL_PITCHES
+        # 2) each pitch type only participates once thrown MIN_PITCHES_PER_TYPE times
+        total_pitches = sum(m.get("count", 0) for m in live.values())
+        if total_pitches < MIN_TOTAL_PITCHES:
+            continue
+        live = {pt: m for pt, m in live.items() if m.get("count", 0) >= MIN_PITCHES_PER_TYPE}
+        if not live:
+            continue
 
         try:
             baseline = await _get_cached_baseline(p["id"])
