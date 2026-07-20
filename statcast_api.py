@@ -105,7 +105,10 @@ def get_live_pitch_metrics(game_pk: int, pitcher_id: int) -> dict:
 
     result = {}
     for pt, metrics in by_pitch_type.items():
-        entry = {"speed": round(sum(metrics["speed"]) / len(metrics["speed"]), 1)}
+        entry = {
+            "speed": round(sum(metrics["speed"]) / len(metrics["speed"]), 1),
+            "count": len(metrics["speed"]),  # pitches of THIS type so far
+        }
         if metrics["spin"]:
             entry["spin"] = round(sum(metrics["spin"]) / len(metrics["spin"]))
         if metrics["break_vert"]:
